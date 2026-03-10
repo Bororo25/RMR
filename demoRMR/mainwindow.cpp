@@ -5,6 +5,7 @@
 #include <QMouseEvent>
 #include <QEvent>
 ///Boris Supak
+///Martin Brandobur
 
 
 
