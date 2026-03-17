@@ -28,6 +28,7 @@ class MainWindow;
 class MainWindow : public QMainWindow {
   Q_OBJECT
 
+//funkcia na udalosti
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
 
@@ -77,14 +78,14 @@ private:
   std::vector<LaserData> copyOfLaserData;
   int datacounter;
   std::string ipaddress;
-  // posledná známa poloha robota z UI slotu
+  // aktualne polohy
   double curXcm = 0.0;
   double curYcm = 0.0;
   double curFiRad = 0.0;
 
-  // vizualizácia posledného kliknutia
+  // cielove pozicie
   bool goalMarkerValid = false;
-  double goalXcm = 0.0;   // globálny cieľ v cm
+  double goalXcm = 0.0;
   double goalYcm = 0.0;
 
   QTimer *timer;

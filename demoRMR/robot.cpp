@@ -1,5 +1,5 @@
 #include "robot.h"
-
+//polomer robota 15cm
 robot::robot(QObject *parent) : QObject(parent)
 {
     qRegisterMetaType<LaserMeasurement>("LaserMeasurement");
@@ -201,6 +201,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             desForw = 0.0;
 
         // RAMPA podľa času (rozbeh aj brzdenie)
+        // RAMPA podľa času – iba ROZBEH, dobeh/brzdenie bez rampy
         auto now = std::chrono::steady_clock::now();
         double dt = std::chrono::duration<double>(now - lastRampTs).count();
         lastRampTs = now;
@@ -208,16 +209,30 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         // ošetrenie: keď dt vyjde divné (napr. pri štarte alebo lag)
         dt = clamp(dt, 0.005, 0.120);
 
-        // ak sa približujem k nule / znižujem rýchlosť => brzdenie (použi maxDecel)
-        // inak rozbeh (použi maxAccel)
-        const bool brakingForw = (std::fabs(desForw) < std::fabs(curForwCmd));
-        const bool brakingRot  = (std::fabs(desRot)  < std::fabs(curRotCmd));
+        auto accelOnly = [&](double &cur, double des, double maxAccel)
+        {
+            // zmena smeru: najprv okamžite na 0
+            if(cur != 0.0 && des != 0.0 && ((cur > 0.0) != (des > 0.0)))
+            {
+                cur = 0.0;
+                return;
+            }
 
-        const double stepForw = (brakingForw ? maxDecelForw : maxAccelForw) * dt;
-        const double stepRot  = (brakingRot  ? maxDecelRot  : maxAccelRot ) * dt;
+            // rampa iba keď zväčšujem absolútnu hodnotu rýchlosti
+            if(std::fabs(des) > std::fabs(cur))
+            {
+                const double step = maxAccel * dt;
+                cur = stepTowards(cur, des, step);
+            }
+            else
+            {
+                // dobeh / brzdenie bez rampy
+                cur = des;
+            }
+        };
 
-        curForwCmd = stepTowards(curForwCmd, desForw, stepForw);
-        curRotCmd  = stepTowards(curRotCmd,  desRot,  stepRot);
+        accelOnly(curForwCmd, desForw, maxAccelForw);
+        accelOnly(curRotCmd,  desRot,  maxAccelRot);
 
         // Pošli do robota
         if(curForwCmd == 0.0 && curRotCmd == 0.0)

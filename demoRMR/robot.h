@@ -36,8 +36,11 @@ public:
   void setSpeedVal(double forw, double rots);
   // tato funkcia fyzicky posiela hodnoty do robota
   void setSpeed(double forw, double rots);
+
+  //funkcie na polohovanie
   void startPoseControl(double goalX_cm, double goalY_cm);
   void stopPoseControl();
+
 signals:
   void publishPosition(double x, double y, double z);
   void publishLidar(const std::vector<LaserData> &lidata);
@@ -49,46 +52,40 @@ signals:
 #endif
 private:
   /// toto su vase premenne na vasu odometriu
-    /// toto su vase premenne na vasu odometriu
-    double x;  // [cm]
-    double y;  // [cm]
-    double fi; // [rad]
-  // --- ODOMETRIA (enkódery + gyro) ---
+
+  double x;  // [cm]
+  double y;  // [cm]
+  double fi; // [rad]
+  // --- ODOMETRIA  ---
   bool odomInitialized = false;
   std::uint16_t lastEncL = 0;
   std::uint16_t lastEncR = 0;
-  double gyroOffsetRad = 0.0; // aby fi = 0 pri štarte
+  double gyroOffsetRad = 0.0;
 
-  // --- RAMPA (hladký rozbeh aj brzdenie) ---
+  // --- RAMPA ---
   double curForwCmd = 0.0; // [mm/s]
   double curRotCmd  = 0.0; // [rad/s]
 
   // max. akcelerácie (rozbeh)
-  double maxAccelForw = 200; // [mm/s^2]
+  double maxAccelForw = 250; // [mm/s^2]
   double maxAccelRot  = 2.5;   // [rad/s^2]
-
-  // max. decelerácie (brzdenie) – trochu vyššie než accel
-  double maxDecelForw = 300; // [mm/s^2]  (1.5×)
-  double maxDecelRot  = 3.5;   // [rad/s^2]
 
   // čas poslednej rampy
   std::chrono::steady_clock::time_point lastRampTs;
-  // --- POLOHOVANIE (združený regulátor) ---
   // --- POLOHOVANIE (združený regulátor) ---
   std::mutex controlMtx;
   bool poseControlActive = false;
   double goalX_cm = 0.0;
   double goalY_cm = 0.0;
 
-  // zisky (začni s týmto, potom doladíš)
-  double kpDist = 7;                    // (mm/s) na cm
-  double kpAng  = 3;                    // (rad/s) na rad
+  double kpDist = 7;
+  double kpAng  = 3;
 
-  double vMax = 350;                    // [mm/s]
+  double vMax = 400;                    // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
-  double posDeadbandCm = 5.0;             // [cm]
-  double rotateOnlyRad = (45.0 * kPi/180.0); // >45°: najprv toč na mieste
+  double posDeadbandCm = 5.0;
+  double rotateOnlyRad = (45.0 * kPi/180.0);
 
   static inline double clamp(double v, double lo, double hi)
   {
@@ -98,7 +95,6 @@ private:
 
   static inline std::int16_t ticksDiff(std::uint16_t now, std::uint16_t prev)
   {
-      // unsigned odčítanie -> mod 65536, potom do int16_t (správny signed rozdiel)
       const std::uint16_t delta = static_cast<std::uint16_t>(now - prev);
       return static_cast<std::int16_t>(delta);
   }
@@ -117,12 +113,13 @@ private:
       return cur + (diff > 0 ? maxStep : -maxStep);
   }
 
-  // Gyro: podľa teba /100 -> stupne, potom stupne -> rad
   static inline double gyroRawToRad(double gyroRaw)
   {
       const double deg = gyroRaw / 100.0;
       return deg * (kPi / 180.0);
   }
+
+
   ///-----------------------------
   /// toto su rychlosti ktore sa nastavuju setSpeedVal a posielaju v
   /// processThisRobot
