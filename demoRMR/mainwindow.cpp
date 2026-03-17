@@ -5,6 +5,7 @@
 #include <QMouseEvent>
 #include <QEvent>
 ///Boris Supak
+///Martin Brandobur
 
 
 
@@ -14,7 +15,11 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
+<<<<<<< HEAD
     ipaddress="192.168.1.14";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
+=======
+    ipaddress= "192.168.1.14";//192.168.1.11toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
+>>>>>>> 5cb8260009531eb8eabeb659625abc01ff26ba23
 
     ui->setupUi(this);
     ui->widget->installEventFilter(this);
