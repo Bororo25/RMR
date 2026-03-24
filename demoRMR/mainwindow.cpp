@@ -15,11 +15,7 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
-<<<<<<< HEAD
-    ipaddress="192.168.1.14";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
-=======
-    ipaddress= "192.168.1.14";//192.168.1.11toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
->>>>>>> 5cb8260009531eb8eabeb659625abc01ff26ba23
+    ipaddress="127.0.0.1";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
 
     ui->setupUi(this);
     ui->widget->installEventFilter(this);
@@ -135,11 +131,15 @@ void MainWindow::paintEvent(QPaintEvent *event)
 
 /// toto je slot. niekde v kode existuje signal, ktory je prepojeny. pouziva sa napriklad (v tomto pripade) ak chcete dostat data z jedneho vlakna (robot) do ineho (ui)
 /// prepojenie signal slot je vo funkcii  on_pushButton_9_clicked
-void  MainWindow::setUiValues(double robotX,double robotY,double robotFi)
+void MainWindow::setUiValues(double robotX,double robotY,double robotFi)
 {
     curXcm = robotX;
     curYcm = robotY;
-    curFiRad = robotFi * M_PI / 180.0; // robotFi prichádza v stupňoch
+    curFiRad = robotFi * M_PI / 180.0;
+
+    ui->lineEdit_2->setText(QString::number(robotX, 'f', 2));
+    ui->lineEdit_3->setText(QString::number(robotY, 'f', 2));
+    ui->lineEdit_4->setText(QString::number(robotFi, 'f', 2));
 }
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
