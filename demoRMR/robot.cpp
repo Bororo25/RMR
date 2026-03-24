@@ -27,6 +27,16 @@ void robot::initAndStartRobot(std::string ipaddress)
 
     curForwCmd = 0.0;
     curRotCmd  = 0.0;
+
+    prevBlocked.assign(vfhSectorCount, false);
+    prevBlockedInitialized = true;
+
+    prevChosenDirRad = 0.0;
+    {
+        std::lock_guard<std::mutex> lk(lidarMtx);
+        latestLidar.clear();
+    }
+
     lastRampTs = std::chrono::steady_clock::now();
     datacounter = 0;
     useDirectCommands = 0;
@@ -55,24 +65,205 @@ void robot::setSpeedVal(double forw, double rots)
 
 void robot::setSpeed(double forw, double rots)
 {
-    // Namiesto priameho posielania to necháme poslať callback (kvôli rampe)
     setSpeedVal(forw, rots);
 }
 void robot::startPoseControl(double gx_cm, double gy_cm)
 {
+    //dostane cielove suradnice
     std::lock_guard<std::mutex> lk(controlMtx);
     goalX_cm = gx_cm;
     goalY_cm = gy_cm;
     poseControlActive = true;
-    useDirectCommands = 0; // nech to riadi callback
+    useDirectCommands = 0;
+    prevChosenDirRad = 0.0;
 }
-
+//zastavenie
 void robot::stopPoseControl()
 {
     std::lock_guard<std::mutex> lk(controlMtx);
     poseControlActive = false;
     forwardspeed = 0.0;
     rotationspeed = 0.0;
+}
+double robot::computeAvoidanceDirection(double goalDirRad,
+                                        double &frontMinCm,
+                                        bool &haveCandidate)
+{
+    std::vector<LaserData> lidar;
+    {
+        std::lock_guard<std::mutex> lk(lidarMtx);
+        lidar = latestLidar;
+    }
+
+    frontMinCm = std::numeric_limits<double>::infinity();
+    haveCandidate = false;
+
+    if(lidar.empty())
+        return goalDirRad;
+
+    const double sectorWidthDeg =
+        (vfhMaxAngleDeg - vfhMinAngleDeg) / static_cast<double>(vfhSectorCount);
+
+    std::vector<double> hist(vfhSectorCount, 0.0);
+    std::vector<bool> blocked(vfhSectorCount, false);
+
+    auto angleToSector = [&](double angDeg) -> int
+    {
+        int idx = static_cast<int>((angDeg - vfhMinAngleDeg) / sectorWidthDeg);
+        if(idx < 0) idx = 0;
+        if(idx >= vfhSectorCount) idx = vfhSectorCount - 1;
+        return idx;
+    };
+
+    auto sectorCenterDeg = [&](int idx) -> double
+    {
+        return vfhMinAngleDeg + (static_cast<double>(idx) + 0.5) * sectorWidthDeg;
+    };
+
+    for(const auto &ld : lidar)
+    {
+
+        const double distCm = static_cast<double>(ld.scanDistance) / 10.0; // mm -> cm
+        if(distCm < 1.0 || distCm > histogramRangeCm) //ignorovanie prilis blizkych alebo vzdialenych bodov
+            continue;
+
+        // laser je ľavotočivý
+        double angDeg = normalizeAngleDeg(-static_cast<double>(ld.scanAngle));
+
+        if(angDeg < vfhMinAngleDeg || angDeg > vfhMaxAngleDeg)
+            continue;
+
+        //sledovanie minimalnej prekazky pred robotom - uvidime ci nechame
+        if(std::fabs(angDeg) <= 15.0)
+            frontMinCm = std::min(frontMinCm, distCm);
+
+        const double safeRadius = robotRadiusCm + safetyMarginCm; //15+7
+        const double ratio = clamp(safeRadius / std::max(distCm, safeRadius + 1.0), 0.0, 1.0); //pomer do asin
+        const double enlargeDeg = rad2deg(std::asin(ratio));
+
+        const double mag = histogramRangeCm - distCm;
+
+        //interval prekazky z 6 strany
+        const int s0 = angleToSector(angDeg - enlargeDeg);
+        const int s1 = angleToSector(angDeg + enlargeDeg);
+        //zapis do histogramu
+        for(int s = s0; s <= s1; ++s)
+            hist[s] = std::max(hist[s], mag);
+    }
+    // podmienky 8 strana
+    if(!prevBlockedInitialized || static_cast<int>(prevBlocked.size()) != vfhSectorCount)
+    {
+        prevBlocked.assign(vfhSectorCount, false);
+        prevBlockedInitialized = true;
+    }
+
+    for(int s = 0; s < vfhSectorCount; ++s)
+    {
+        if(hist[s] >= histHigh)
+        {
+            blocked[s] = true;
+        }
+        else if(hist[s] <= histLow)
+        {
+            blocked[s] = false;
+        }
+        else
+        {
+            blocked[s] = prevBlocked[s];
+        }
+    }
+
+    prevBlocked = blocked;
+    const double goalDeg = rad2deg(goalDirRad);
+
+    struct Gap
+    {
+        int a;
+        int b;
+    };
+    std::vector<Gap> gaps;
+
+    int i = 0;
+    while(i < vfhSectorCount)
+    {
+        while(i < vfhSectorCount && blocked[i]) ++i; //zacne pri neblokovanom
+        if(i >= vfhSectorCount) break;
+
+        const int start = i;
+        while(i < vfhSectorCount && !blocked[i]) ++i; //konci na blokovanom
+        const int end = i - 1;
+
+        gaps.push_back({start, end});
+    }
+
+    if(gaps.empty())
+    {
+        double leftSum = 0.0;
+        double rightSum = 0.0;
+
+        for(int s = 0; s < vfhSectorCount; ++s)
+        {
+            const double c = sectorCenterDeg(s);
+            if(c >= 0.0) leftSum += hist[s];
+            else         rightSum += hist[s];
+        }
+
+        haveCandidate = true;
+        prevChosenDirRad = (leftSum < rightSum) ? deg2rad(60.0) : deg2rad(-60.0);
+        return prevChosenDirRad;
+    }
+
+    std::vector<double> candidatesDeg;
+
+    for(const auto &g : gaps)
+    {
+        const double leftDeg  = sectorCenterDeg(g.a); //lavy okraj(uhol)
+        const double rightDeg = sectorCenterDeg(g.b); //pravy okraj(uhol)
+        const double widthDeg = (g.b - g.a + 1) * sectorWidthDeg; //sirka priechodu
+
+        const bool goalInside = (goalDeg >= leftDeg && goalDeg <= rightDeg);
+        if(goalInside)
+            candidatesDeg.push_back(goalDeg);
+
+        if(widthDeg < wideGapDeg) //ak uzky priechod (<24)
+        {
+            candidatesDeg.push_back(0.5 * (leftDeg + rightDeg)); //stred
+        }
+        else //na kraje str.12
+        {
+            candidatesDeg.push_back(leftDeg  + edgeOffsetDeg);
+            candidatesDeg.push_back(rightDeg - edgeOffsetDeg);
+        }
+    }
+
+    if(candidatesDeg.empty())
+        candidatesDeg.push_back(goalDeg);
+
+    const double prevDeg = rad2deg(prevChosenDirRad);
+
+    double bestDeg = candidatesDeg.front();
+    double bestCost = std::numeric_limits<double>::infinity();
+
+    for(double cand : candidatesDeg)
+    {
+        cand = clamp(cand, vfhMinAngleDeg, vfhMaxAngleDeg);
+
+        const double goalErr   = std::fabs(normalizeAngleDeg(cand - goalDeg));
+        const double smoothErr = std::fabs(normalizeAngleDeg(cand - prevDeg));
+        const double centerErr = std::fabs(cand);
+
+        const double cost = 1.0 * goalErr + 0.3 * centerErr + 0.2 * smoothErr; //rovnica 13.str
+
+        if(cost < bestCost)
+        {
+            bestCost = cost;
+            bestDeg = cand;
+        }
+    }
+
+    haveCandidate = true;
+    prevChosenDirRad = deg2rad(bestDeg);
+    return prevChosenDirRad;
 }
 ///toto je calback na data z robota, ktory ste podhodili robotu vo funkcii initAndStartRobot
 /// vola sa vzdy ked dojdu nove data z robota. nemusite nic riesit, proste sa to stane
@@ -81,7 +272,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
 
     ///tu mozete robit s datami z robota
-    // --- ODOMETRIA: vzdialenosť z enkóderov, uhol z gyra ---
+    //ODOMETRIA
     const double gyroRadAbs = gyroRawToRad(static_cast<double>(robotdata.GyroAngle));
 
     if(!odomInitialized)
@@ -112,13 +303,11 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         const double dR = static_cast<double>(dTicksR) * tickToMeter; // [m]
 
         // krok v centimetroch
-        const double l_cm = 0.5 * (dL + dR) * 100.0; // [cm]
-
-        // x,y budú odteraz v cm
+        const double l_cm = 0.5 * (dL + dR) * 100.0;
+        //vzorce 10. str
         x += l_cm * std::cos(fi);
         y += l_cm * std::sin(fi);
 
-        // fi berieme z gyra
         fi = newFi;
     }
 
@@ -150,7 +339,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
     {
         double desForw = forwardspeed;   // [mm/s]
         double desRot  = rotationspeed;  // [rad/s]
-        // --- ZDRUŽENÝ REGULÁTOR POLOHY (ak je aktívny) ---
+        // ZDRUZENÝ REGULÁTOR POLOHY
         bool active;
         double gx, gy;
         {
@@ -162,7 +351,8 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
         if(active)
         {
-            const double dx = gx - x;     // x,y sú v cm
+            //rozdiely
+            const double dx = gx - x;
             const double dy = gy - y;
             const double rho = std::sqrt(dx*dx + dy*dy); // [cm]
 
@@ -175,50 +365,75 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             }
             else
             {
+                //smerovanie
                 const double heading = std::atan2(dy, dx);
-                const double alpha = normalizeAngleRad(heading - fi);
+                //chyba uhlova
+                const double alphaGoal = normalizeAngleRad(heading - fi);
 
-                if(std::fabs(alpha) > rotateOnlyRad)
+                double frontMinCm = std::numeric_limits<double>::infinity();
+                bool haveCandidate = false;
+
+                double alphaCmd = alphaGoal;
+                if(avoidanceEnabled)
+                    alphaCmd = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
+
+                // ak v predu prekazka tak zastav
+                if(frontMinCm < frontStopCm && std::fabs(alphaCmd) < deg2rad(20.0))
                 {
                     desForw = 0.0;
-                    desRot  = clamp(kpAng * alpha, -wMax, wMax);
+                    desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
+                }
+                else if(std::fabs(alphaCmd) > rotateOnlyRad)
+                {
+                    desForw = 0.0;
+                    desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
                 }
                 else
                 {
-                    desForw = clamp(kpDist * rho, 0.0, vMax);       // [mm/s]
-                    desRot  = clamp(kpAng  * alpha, -wMax, wMax);    // [rad/s]
+                    double steerScale = clamp(1.0 - std::fabs(alphaCmd) / deg2rad(90.0), 0.20, 1.0);
+                    double frontScale = 1.0;
+
+                    if(frontMinCm < obstacleSlowBandCm)
+                    {
+                        frontScale = clamp((frontMinCm - frontStopCm) /
+                                               (obstacleSlowBandCm - frontStopCm),
+                                           0.0, 1.0);
+                    }
+
+                    double rotScale = 1.0;
+                    if(frontMinCm < obstacleSlowBandCm)
+                        rotScale = 0.5;
+
+                    desRot = clamp(kpAng * alphaCmd, -wMax * rotScale, wMax * rotScale);
+
+                    desForw = clamp(kpDist * rho * steerScale * frontScale, 0.0, vMax);
                 }
             }
         }
-        // deadband (jemné potlačenie šumu)
+        // deadband
         const double forwDeadband = 5.0;
         const double rotDeadband  = 0.05;
         if (std::fabs(desForw) <= forwDeadband) desForw = 0.0;
         if (std::fabs(desRot)  <= rotDeadband)  desRot  = 0.0;
 
-        // ŽIADNA KRIVKA len v manuáli (polohovanie môže použiť oblúk)
         if(!active && desForw != 0.0 && desRot != 0.0)
             desForw = 0.0;
 
-        // RAMPA podľa času (rozbeh aj brzdenie)
-        // RAMPA podľa času – iba ROZBEH, dobeh/brzdenie bez rampy
+        // cas pre rampu
         auto now = std::chrono::steady_clock::now();
         double dt = std::chrono::duration<double>(now - lastRampTs).count();
         lastRampTs = now;
 
-        // ošetrenie: keď dt vyjde divné (napr. pri štarte alebo lag)
         dt = clamp(dt, 0.005, 0.120);
 
         auto accelOnly = [&](double &cur, double des, double maxAccel)
         {
-            // zmena smeru: najprv okamžite na 0
             if(cur != 0.0 && des != 0.0 && ((cur > 0.0) != (des > 0.0)))
             {
                 cur = 0.0;
                 return;
             }
 
-            // rampa iba keď zväčšujem absolútnu hodnotu rýchlosti
             if(std::fabs(des) > std::fabs(cur))
             {
                 const double step = maxAccel * dt;
@@ -226,7 +441,6 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             }
             else
             {
-                // dobeh / brzdenie bez rampy
                 cur = des;
             }
         };
@@ -264,18 +478,15 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 /// vola sa ked dojdu nove data z lidaru
 int robot::processThisLidar(const std::vector<LaserData>& laserData)
 {
+    {
+        std::lock_guard<std::mutex> lk(lidarMtx);
+        latestLidar = laserData;
+    }
 
-    copyOfLaserData=laserData;
-
-    //tu mozete robit s datami z lidaru.. napriklad najst prekazky, zapisat do mapy. naplanovat ako sa prekazke vyhnut.
-    // ale nic vypoctovo narocne - to iste vlakno ktore cita data z lidaru
-   // updateLaserPicture=1;
+    copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);
-   // update();//tento prikaz prinuti prekreslit obrazovku.. zavola sa paintEvent funkcia
-
 
     return 0;
-
 }
 
   #ifndef DISABLE_OPENCV

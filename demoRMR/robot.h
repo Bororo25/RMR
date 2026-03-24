@@ -7,6 +7,7 @@
 #include <cmath>
 #include <mutex>
 #include <chrono>
+#include <limits>
 
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
@@ -78,13 +79,62 @@ private:
   double goalX_cm = 0.0;
   double goalY_cm = 0.0;
 
-  double kpDist = 7;
-  double kpAng  = 3;
+  // --- VYHÝBANIE SA PREKÁŽKAM (zjednodušené VFH+) ---
+  std::mutex lidarMtx;
+  std::vector<LaserData> latestLidar;
 
-  double vMax = 400;                    // [mm/s]
+  bool avoidanceEnabled = true;
+
+  int vfhSectorCount = 72;              // 72 sektorov => 2.5° na sektor
+  double vfhMinAngleDeg = -180.0;        // sledujeme predný polpriestor
+  double vfhMaxAngleDeg =  180.0;
+
+  double histogramRangeCm = 180.0;      // do akej vzdialenosti berieme prekážky
+  double robotRadiusCm    = 15.0;       // šírka robota
+  double safetyMarginCm   = 10;       // rezerva popri prekážke
+  double frontStopCm      = 30.0;       // ak je niečo veľmi blízko vpredu, netlač dopredu
+
+  double wideGapDeg       = 24.0;       // od tejto šírky ber medzeru ako "širokú"
+  double edgeOffsetDeg    = 0.00;       // kandidát vo vnútri kraja priechodu
+
+  double histLow  = 110;   // dolný prah hysterézie
+  double histHigh = 140;   // horný prah hysterézie
+
+  std::vector<bool> prevBlocked;
+  bool prevBlockedInitialized = false;     // prah blokovaného sektora
+  double obstacleSlowBandCm = 80.0;     // pri blízkej prekážke spomaľuj
+
+  double prevChosenDirRad = 0.0;        // kvôli hladšiemu výberu kandidáta
+
+  static inline double deg2rad(double d)
+  {
+      return d * (kPi / 180.0);
+  }
+
+  static inline double rad2deg(double r)
+  {
+      return r * (180.0 / kPi);
+  }
+
+  static inline double normalizeAngleDeg(double a)
+  {
+      while (a > 180.0) a -= 360.0;
+      while (a < -180.0) a += 360.0;
+      return a;
+  }
+
+  double computeAvoidanceDirection(double goalDirRad,
+                                   double &frontMinCm,
+                                   bool &haveCandidate);
+
+
+  double kpDist = 7;
+  double kpAng  = 1.8;
+
+  double vMax = 350;                    // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
-  double posDeadbandCm = 5.0;
+  double posDeadbandCm = 8;
   double rotateOnlyRad = (45.0 * kPi/180.0);
 
   static inline double clamp(double v, double lo, double hi)
@@ -106,6 +156,7 @@ private:
       return a;
   }
 
+//pohyb dopredu o maxstep
   static inline double stepTowards(double cur, double target, double maxStep)
   {
       const double diff = target - cur;
