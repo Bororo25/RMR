@@ -71,6 +71,10 @@ private:
   double maxAccelForw = 250; // [mm/s^2]
   double maxAccelRot  = 2.5;   // [rad/s^2]
 
+
+  double minTurnRadiusCm = 50.0;     // minimálny polomer oblúka robota
+  double maskMarginCm    = 5.0;      // malá rezerva navyše
+
   // čas poslednej rampy
   std::chrono::steady_clock::time_point lastRampTs;
   // --- POLOHOVANIE (združený regulátor) ---
@@ -94,7 +98,7 @@ private:
   double safetyMarginCm   = 10;       // rezerva popri prekážke
   double frontStopCm      = 30.0;       // ak je niečo veľmi blízko vpredu, netlač dopredu
 
-  double wideGapDeg       = 24.0;       // od tejto šírky ber medzeru ako "širokú"
+  double wideGapDeg       = 12.0;       // od tejto šírky ber medzeru ako "širokú"
   double edgeOffsetDeg    = 0.00;       // kandidát vo vnútri kraja priechodu
 
   double histLow  = 110;   // dolný prah hysterézie

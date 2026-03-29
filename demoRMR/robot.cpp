@@ -106,6 +106,7 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 
     std::vector<double> hist(vfhSectorCount, 0.0);
     std::vector<bool> blocked(vfhSectorCount, false);
+    std::vector<bool> maskBlocked(vfhSectorCount, false);
 
     auto angleToSector = [&](double angDeg) -> int
     {
@@ -149,6 +150,41 @@ double robot::computeAvoidanceDirection(double goalDirRad,
         //zapis do histogramu
         for(int s = s0; s <= s1; ++s)
             hist[s] = std::max(hist[s], mag);
+
+        const double angRad = deg2rad(angDeg);
+
+        const double px = distCm * std::cos(angRad);   // dopredu +
+        const double py = distCm * std::sin(angRad);   // vlavo +
+
+        // stredy minimálnych oblúkov
+        // ľavý oblúk:  (0, +R)
+        // pravý oblúk: (0, -R)
+        const double Rmask = minTurnRadiusCm;
+        const double safeMaskRadius = robotRadiusCm + safetyMarginCm + maskMarginCm;
+
+        const double dLeft  = std::sqrt(px*px + (py - Rmask)*(py - Rmask));
+        const double dRight = std::sqrt(px*px + (py + Rmask)*(py + Rmask));
+
+
+        if(py >= 0.0 && dLeft <= (Rmask + safeMaskRadius))
+        {
+            for(int s = s0; s <= s1; ++s)
+            {
+                const double cdeg = sectorCenterDeg(s);
+                if(cdeg >= 0.0)
+                    maskBlocked[s] = true;
+            }
+        }
+
+        if(py <= 0.0 && dRight <= (Rmask + safeMaskRadius))
+        {
+            for(int s = s0; s <= s1; ++s)
+            {
+                const double cdeg = sectorCenterDeg(s);
+                if(cdeg <= 0.0)
+                    maskBlocked[s] = true;
+            }
+        }
     }
     // podmienky 8 strana
     if(!prevBlockedInitialized || static_cast<int>(prevBlocked.size()) != vfhSectorCount)
@@ -171,6 +207,13 @@ double robot::computeAvoidanceDirection(double goalDirRad,
         {
             blocked[s] = prevBlocked[s];
         }
+    }
+
+    // aplikácia masky Hm
+    for(int s = 0; s < vfhSectorCount; ++s)
+    {
+        if(maskBlocked[s])
+            blocked[s] = true;
     }
 
     prevBlocked = blocked;
@@ -225,11 +268,11 @@ double robot::computeAvoidanceDirection(double goalDirRad,
         if(goalInside)
             candidatesDeg.push_back(goalDeg);
 
-        if(widthDeg < wideGapDeg) //ak uzky priechod (<24)
+        if(widthDeg < wideGapDeg)
         {
             candidatesDeg.push_back(0.5 * (leftDeg + rightDeg)); //stred
         }
-        else //na kraje str.12
+        else
         {
             candidatesDeg.push_back(leftDeg  + edgeOffsetDeg);
             candidatesDeg.push_back(rightDeg - edgeOffsetDeg);
@@ -252,7 +295,7 @@ double robot::computeAvoidanceDirection(double goalDirRad,
         const double smoothErr = std::fabs(normalizeAngleDeg(cand - prevDeg));
         const double centerErr = std::fabs(cand);
 
-        const double cost = 1.0 * goalErr + 0.3 * centerErr + 0.2 * smoothErr; //rovnica 13.str
+        const double cost = 1.0 * goalErr + 0.3 * centerErr + 0.3 * smoothErr; //rovnica 13.str
 
         if(cost < bestCost)
         {
@@ -388,11 +431,10 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                     desForw = 0.0;
                     desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
                 }
-                else
+                else //25ms
                 {
                     double steerScale = clamp(1.0 - std::fabs(alphaCmd) / deg2rad(90.0), 0.20, 1.0);
                     double frontScale = 1.0;
-
                     if(frontMinCm < obstacleSlowBandCm)
                     {
                         frontScale = clamp((frontMinCm - frontStopCm) /
@@ -400,13 +442,8 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                                            0.0, 1.0);
                     }
 
-                    double rotScale = 1.0;
-                    if(frontMinCm < obstacleSlowBandCm)
-                        rotScale = 0.5;
-
-                    desRot = clamp(kpAng * alphaCmd, -wMax * rotScale, wMax * rotScale);
-
                     desForw = clamp(kpDist * rho * steerScale * frontScale, 0.0, vMax);
+                    desRot = clamp(kpAng * alphaCmd, -0.6, 0.6);
                 }
             }
         }
