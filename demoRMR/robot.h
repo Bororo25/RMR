@@ -98,7 +98,7 @@ private:
   double safetyMarginCm   = 10;       // rezerva popri prekážke
   double frontStopCm      = 30.0;       // ak je niečo veľmi blízko vpredu, netlač dopredu
 
-  double wideGapDeg       = 12.0;       // od tejto šírky ber medzeru ako "širokú"
+  double wideGapDeg       = 30.0;       // od tejto šírky ber medzeru ako "širokú"
   double edgeOffsetDeg    = 0.00;       // kandidát vo vnútri kraja priechodu
 
   double histLow  = 110;   // dolný prah hysterézie
