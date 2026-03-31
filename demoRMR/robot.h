@@ -76,7 +76,8 @@ private:
   double maskMarginCm    = 5.0;      // malá rezerva navyše
 
   // čas poslednej rampy
-  std::chrono::steady_clock::time_point lastRampTs;
+  std::uint32_t lastRobotTimestampUs = 0;
+  bool rampTimestampInitialized = false;
   // --- POLOHOVANIE (združený regulátor) ---
   std::mutex controlMtx;
   bool poseControlActive = false;
@@ -95,7 +96,7 @@ private:
 
   double histogramRangeCm = 180.0;      // do akej vzdialenosti berieme prekážky
   double robotRadiusCm    = 15.0;       // šírka robota
-  double safetyMarginCm   = 10;       // rezerva popri prekážke
+  double safetyMarginCm   = 7;       // rezerva popri prekážke
   double frontStopCm      = 30.0;       // ak je niečo veľmi blízko vpredu, netlač dopredu
 
   double wideGapDeg       = 30.0;       // od tejto šírky ber medzeru ako "širokú"
@@ -132,13 +133,13 @@ private:
                                    bool &haveCandidate);
 
 
-  double kpDist = 7;
-  double kpAng  = 1.8;
+  double kpDist = 6.0;
+  double kpAng  = 1.6;
 
-  double vMax = 350;                    // [mm/s]
+  double vMax = 350.0;
+  double posDeadbandCm = 5.0;                  // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
-  double posDeadbandCm = 8;
   double rotateOnlyRad = (45.0 * kPi/180.0);
 
   static inline double clamp(double v, double lo, double hi)

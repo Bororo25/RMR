@@ -37,7 +37,8 @@ void robot::initAndStartRobot(std::string ipaddress)
         latestLidar.clear();
     }
 
-    lastRampTs = std::chrono::steady_clock::now();
+    lastRobotTimestampUs = 0;
+    rampTimestampInitialized = false;
     datacounter = 0;
     useDirectCommands = 0;
     ///setovanie veci na komunikaciu s robotom/lidarom/kamerou.. su tam adresa porty a callback.. laser ma ze sa da dat callback aj ako lambda.
@@ -394,7 +395,6 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
         if(active)
         {
-            //rozdiely
             const double dx = gx - x;
             const double dy = gy - y;
             const double rho = std::sqrt(dx*dx + dy*dy); // [cm]
@@ -403,52 +403,59 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             {
                 desForw = 0.0;
                 desRot  = 0.0;
+                curForwCmd = 0.0;
+                curRotCmd  = 0.0;
+
                 std::lock_guard<std::mutex> lk(controlMtx);
                 poseControlActive = false;
             }
             else
             {
-                //smerovanie
                 const double heading = std::atan2(dy, dx);
-                //chyba uhlova
                 const double alphaGoal = normalizeAngleRad(heading - fi);
 
                 double frontMinCm = std::numeric_limits<double>::infinity();
                 bool haveCandidate = false;
 
-                double alphaCmd = alphaGoal;
+                double alphaAvoid = alphaGoal;
                 if(avoidanceEnabled)
-                    alphaCmd = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
+                    alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
 
-                // ak v predu prekazka tak zastav
-                if(frontMinCm < frontStopCm && std::fabs(alphaCmd) < deg2rad(20.0))
+                // zdruzeny regulator:
+                // daleko od ciela viac respektuj vyhybanie,
+                // blizko ciela viac respektuj priamy smer na ciel
+                double alphaCmd = alphaAvoid;
+                if(rho < 30.0)
                 {
-                    desForw = 0.0;
-                    desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
+                    const double blend = clamp((30.0 - rho) / 20.0, 0.0, 1.0);
+                    alphaCmd = normalizeAngleRad((1.0 - blend) * alphaAvoid + blend * alphaGoal);
                 }
-                else if(std::fabs(alphaCmd) > rotateOnlyRad)
-                {
-                    desForw = 0.0;
-                    desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
-                }
-                else //25ms
-                {
-                    double steerScale = clamp(1.0 - std::fabs(alphaCmd) / deg2rad(90.0), 0.20, 1.0);
-                    double frontScale = 1.0;
-                    if(frontMinCm < obstacleSlowBandCm)
-                    {
-                        frontScale = clamp((frontMinCm - frontStopCm) /
-                                               (obstacleSlowBandCm - frontStopCm),
-                                           0.0, 1.0);
-                    }
 
-                    desForw = clamp(kpDist * rho * steerScale * frontScale, 0.0, vMax);
-                    desRot = clamp(kpAng * alphaCmd, -0.6, 0.6);
+                // plynule znizenie doprednej rychlosti pri velkej uhlovej chybe
+                const double steerScale = clamp(std::cos(std::fabs(alphaCmd)), 0.0, 1.0);
+
+                // plynule znizenie doprednej rychlosti pri blizkej prekazke
+                double frontScale = 1.0;
+                if(frontMinCm < obstacleSlowBandCm)
+                {
+                    frontScale = clamp((frontMinCm - frontStopCm) /
+                                           (obstacleSlowBandCm - frontStopCm),
+                                       0.0, 1.0);
                 }
+
+                // pri dojazde do ciela este jemne spomal
+                const double goalScale = clamp(rho / 30.0, 0.20, 1.0);
+
+                desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale, 0.0, vMax);
+                desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
+
+                // havarijna poistka: ked je prekazka uplne blizko, netlac dopredu
+                if(frontMinCm < frontStopCm)
+                    desForw = 0.0;
             }
         }
         // deadband
-        const double forwDeadband = 5.0;
+        const double forwDeadband = 8.0;
         const double rotDeadband  = 0.05;
         if (std::fabs(desForw) <= forwDeadband) desForw = 0.0;
         if (std::fabs(desRot)  <= rotDeadband)  desRot  = 0.0;
@@ -457,9 +464,26 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             desForw = 0.0;
 
         // cas pre rampu
-        auto now = std::chrono::steady_clock::now();
-        double dt = std::chrono::duration<double>(now - lastRampTs).count();
-        lastRampTs = now;
+        std::uint32_t nowUs = robotdata.synctimestamp;
+        double dt = 0.02;
+
+        if(!rampTimestampInitialized)
+        {
+            lastRobotTimestampUs = nowUs;
+            rampTimestampInitialized = true;
+        }
+        else
+        {
+            std::uint32_t dUs = 0;
+
+            if(nowUs >= lastRobotTimestampUs)
+                dUs = nowUs - lastRobotTimestampUs;
+            else
+                dUs = (std::numeric_limits<std::uint32_t>::max() - lastRobotTimestampUs) + nowUs + 1u;
+
+            lastRobotTimestampUs = nowUs;
+            dt = static_cast<double>(dUs) * 1e-6;
+        }
 
         dt = clamp(dt, 0.005, 0.120);
 
