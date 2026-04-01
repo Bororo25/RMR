@@ -96,7 +96,7 @@ private:
 
   double histogramRangeCm = 180.0;      // do akej vzdialenosti berieme prekážky
   double robotRadiusCm    = 15.0;       // šírka robota
-  double safetyMarginCm   = 7;       // rezerva popri prekážke
+  double safetyMarginCm   = 8;       // rezerva popri prekážke
   double frontStopCm      = 30.0;       // ak je niečo veľmi blízko vpredu, netlač dopredu
 
   double wideGapDeg       = 30.0;       // od tejto šírky ber medzeru ako "širokú"
@@ -131,12 +131,13 @@ private:
   double computeAvoidanceDirection(double goalDirRad,
                                    double &frontMinCm,
                                    bool &haveCandidate);
+  bool canGoDirectlyToGoal(double goalDirRad, double goalDistCm);
 
 
   double kpDist = 6.0;
   double kpAng  = 1.6;
 
-  double vMax = 350.0;
+  double vMax = 400.0;
   double posDeadbandCm = 5.0;                  // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 

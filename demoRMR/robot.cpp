@@ -86,6 +86,45 @@ void robot::stopPoseControl()
     forwardspeed = 0.0;
     rotationspeed = 0.0;
 }
+
+bool robot::canGoDirectlyToGoal(double goalDirRad, double goalDistCm)
+{
+    std::vector<LaserData> lidar;
+    {
+        std::lock_guard<std::mutex> lk(lidarMtx);
+        lidar = latestLidar;
+    }
+
+    if(lidar.empty())
+        return false;
+
+    const double corridorHalfWidthCm = robotRadiusCm + safetyMarginCm;
+
+    for(const auto &ld : lidar)
+    {
+        const double distCm = static_cast<double>(ld.scanDistance) / 10.0; // mm -> cm
+        if(distCm < 1.0)
+            continue;
+
+        double angRad = deg2rad(normalizeAngleDeg(-static_cast<double>(ld.scanAngle)));
+
+        const double px = distCm * std::cos(angRad);
+        const double py = distCm * std::sin(angRad);
+
+        const double gx = std::cos(goalDirRad);
+        const double gy = std::sin(goalDirRad);
+
+        const double along = px * gx + py * gy;
+
+
+        const double perp = std::fabs(-gy * px + gx * py);
+
+        if(along >= 0.0 && along <= goalDistCm && perp <= corridorHalfWidthCm)
+            return false;
+    }
+
+    return true;
+}
 double robot::computeAvoidanceDirection(double goalDirRad,
                                         double &frontMinCm,
                                         bool &haveCandidate)
@@ -418,12 +457,29 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 bool haveCandidate = false;
 
                 double alphaAvoid = alphaGoal;
-                if(avoidanceEnabled)
-                    alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
 
-                // zdruzeny regulator:
-                // daleko od ciela viac respektuj vyhybanie,
-                // blizko ciela viac respektuj priamy smer na ciel
+                // keď som blízko cieľa a viem sa tam zmestiť, idem priamo na cieľ
+
+                // keď som blízko cieľa a viem sa tam zmestiť, idem priamo na cieľ
+                const double directGoalThresholdCm = 35.0;
+                const bool directToGoal =
+                    (rho < directGoalThresholdCm) && canGoDirectlyToGoal(alphaGoal, rho);
+
+                // FINÁLNY DOJAZD: veľmi blízko cieľa už neobchádzaj, ale dotiahni cieľ
+                if(rho < 20.0)
+                {
+                    alphaAvoid = alphaGoal;
+                    frontMinCm = std::numeric_limits<double>::infinity();
+                }
+                else if(directToGoal)
+                {
+                    alphaAvoid = alphaGoal;
+                    frontMinCm = std::numeric_limits<double>::infinity();
+                }
+                else if(avoidanceEnabled)
+                {
+                    alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
+                }
                 double alphaCmd = alphaAvoid;
                 if(rho < 30.0)
                 {
@@ -431,10 +487,8 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                     alphaCmd = normalizeAngleRad((1.0 - blend) * alphaAvoid + blend * alphaGoal);
                 }
 
-                // plynule znizenie doprednej rychlosti pri velkej uhlovej chybe
                 const double steerScale = clamp(std::cos(std::fabs(alphaCmd)), 0.0, 1.0);
 
-                // plynule znizenie doprednej rychlosti pri blizkej prekazke
                 double frontScale = 1.0;
                 if(frontMinCm < obstacleSlowBandCm)
                 {
@@ -444,12 +498,11 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 }
 
                 // pri dojazde do ciela este jemne spomal
-                const double goalScale = clamp(rho / 30.0, 0.20, 1.0);
+                const double goalScale = clamp(rho / 10.0, 0.20, 1.0);
 
                 desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale, 0.0, vMax);
                 desRot  = clamp(kpAng * alphaCmd, -wMax, wMax);
 
-                // havarijna poistka: ked je prekazka uplne blizko, netlac dopredu
                 if(frontMinCm < frontStopCm)
                     desForw = 0.0;
             }
