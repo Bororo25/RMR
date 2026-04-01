@@ -1,21 +1,202 @@
 #include "robot.h"
+
 //polomer robota 15cm
 robot::robot(QObject *parent) : QObject(parent)
 {
     qRegisterMetaType<LaserMeasurement>("LaserMeasurement");
-    #ifndef DISABLE_OPENCV
+#ifndef DISABLE_OPENCV
     qRegisterMetaType<cv::Mat>("cv::Mat");
 #endif
 #ifndef DISABLE_SKELETON
-qRegisterMetaType<skeleton>("skeleton");
+    qRegisterMetaType<skeleton>("skeleton");
 #endif
+}
+
+double robot::interpAngle(double a0, double a1, double t)
+{
+    double d = normalizeAngleRad(a1 - a0);
+    return normalizeAngleRad(a0 + t * d);
+}
+
+bool robot::interpolatePose(std::uint32_t ts_us, double &ix, double &iy, double &ifi)
+{
+    std::lock_guard<std::mutex> lk(poseHistoryMtx);
+
+    if(poseHistory.size() < 2)
+        return false;
+
+    // mimo rozsahu radšej nezapisuj nič
+    if(ts_us <= poseHistory.front().ts_us)
+        return false;
+
+    if(ts_us >= poseHistory.back().ts_us)
+        return false;
+
+    for(size_t i = 1; i < poseHistory.size(); ++i)
+    {
+        const auto &p0 = poseHistory[i - 1];
+        const auto &p1 = poseHistory[i];
+
+        if(ts_us >= p0.ts_us && ts_us <= p1.ts_us)
+        {
+            const double dt = static_cast<double>(p1.ts_us - p0.ts_us);
+            if(dt <= 0.0)
+                return false;
+
+            const double alpha = static_cast<double>(ts_us - p0.ts_us) / dt;
+
+            ix  = p0.x_cm + alpha * (p1.x_cm - p0.x_cm);
+            iy  = p0.y_cm + alpha * (p1.y_cm - p0.y_cm);
+            ifi = interpAngle(p0.fi_rad, p1.fi_rad, alpha);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void robot::initOccupancyGrid()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    occupancyGrid.assign(
+        mapHeightCells,
+        std::vector<int8_t>(mapWidthCells, -1)
+        );
+
+    hitGrid.assign(
+        mapHeightCells,
+        std::vector<uint16_t>(mapWidthCells, 0)
+        );
+
+    freeGrid.assign(
+        mapHeightCells,
+        std::vector<uint16_t>(mapWidthCells, 0)
+        );
+}
+
+std::vector<std::vector<int8_t>> robot::getOccupancyGrid()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+    return occupancyGrid;
+}
+
+bool robot::worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const
+{
+    mx = static_cast<int>(std::round(wx_cm / mapResolutionCm)) + mapOriginCellX;
+    my = mapOriginCellY - static_cast<int>(std::round(wy_cm / mapResolutionCm));
+
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return false;
+
+    return true;
+}
+
+void robot::markCellFree(int mx, int my)
+{
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return;
+
+    freeGrid[my][mx] = std::min<uint16_t>(static_cast<uint16_t>(freeGrid[my][mx] + 1), static_cast<uint16_t>(1000));
+
+    // free bunka až po prevahe free dôkazu
+    if(freeGrid[my][mx] > hitGrid[my][mx] + 2)
+        occupancyGrid[my][mx] = 0;
+}
+
+void robot::markCellOccupied(int mx, int my)
+{
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return;
+
+    hitGrid[my][mx] = std::min<uint16_t>(static_cast<uint16_t>(hitGrid[my][mx] + 1), static_cast<uint16_t>(1000));
+
+    int neededHits = 3;
+
+    // pri väčšej rotácii buď prísnejší
+    if(std::fabs(currentOmegaRad) > 0.6)
+        neededHits = 5;
+
+    // pri veľmi rýchlej rotácii practically occupied nezapisuj
+    if(std::fabs(currentOmegaRad) > 1.0)
+        neededHits = 10000;
+
+    if(hitGrid[my][mx] >= neededHits && hitGrid[my][mx] > freeGrid[my][mx] + 1)
+        occupancyGrid[my][mx] = 100;
+}
+
+void robot::raytraceFreeCells(int x0, int y0, int x1, int y1)
+{
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    int x = x0;
+    int y = y0;
+
+    while(true)
+    {
+        if(x == x1 && y == y1)
+            break;
+
+        markCellFree(x, y);
+
+        int e2 = 2 * err;
+        if(e2 > -dy)
+        {
+            err -= dy;
+            x += sx;
+        }
+        if(e2 < dx)
+        {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+void robot::updateMapFromLidar(const std::vector<LaserData> &laserData)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    for(const auto &ld : laserData)
+    {
+        const double distCm = static_cast<double>(ld.scanDistance) / 10.0; // mm -> cm
+
+        // odfiltruj problematické body
+        if(distCm < 8.0 || distCm > 300.0)
+            continue;
+
+        double rx, ry, rfi;
+        if(!interpolatePose(ld.timestamp, rx, ry, rfi))
+            continue;
+
+        int robotMx, robotMy;
+        if(!worldToMap(rx, ry, robotMx, robotMy))
+            continue;
+
+        // lidar je ľavotočivý
+        const double localAngleRad = deg2rad(-static_cast<double>(ld.scanAngle));
+        const double beamAngle = rfi + localAngleRad;
+
+        const double hitX = rx + distCm * std::cos(beamAngle);
+        const double hitY = ry + distCm * std::sin(beamAngle);
+
+        int hitMx, hitMy;
+        if(!worldToMap(hitX, hitY, hitMx, hitMy))
+            continue;
+
+        raytraceFreeCells(robotMx, robotMy, hitMx, hitMy);
+        markCellOccupied(hitMx, hitMy);
+    }
 }
 
 void robot::initAndStartRobot(std::string ipaddress)
 {
-
-    forwardspeed=0;
-    rotationspeed=0;
+    forwardspeed = 0;
+    rotationspeed = 0;
     x = 0.0;
     y = 0.0;
     fi = 0.0;
@@ -27,6 +208,7 @@ void robot::initAndStartRobot(std::string ipaddress)
 
     curForwCmd = 0.0;
     curRotCmd  = 0.0;
+    currentOmegaRad = 0.0;
 
     prevBlocked.assign(vfhSectorCount, false);
     prevBlockedInitialized = true;
@@ -37,23 +219,27 @@ void robot::initAndStartRobot(std::string ipaddress)
         latestLidar.clear();
     }
 
+    {
+        std::lock_guard<std::mutex> lk(poseHistoryMtx);
+        poseHistory.clear();
+    }
+
+    initOccupancyGrid();
+
     lastRampTs = std::chrono::steady_clock::now();
     datacounter = 0;
     useDirectCommands = 0;
-    ///setovanie veci na komunikaciu s robotom/lidarom/kamerou.. su tam adresa porty a callback.. laser ma ze sa da dat callback aj ako lambda.
-    /// lambdy su super, setria miesto a ak su rozumnej dlzky,tak aj prehladnost... ak ste o nich nic nepoculi poradte sa s vasim doktorom alebo lekarnikom...
+
     robotCom.setLaserParameters([this](const std::vector<LaserData>& dat)->int{return processThisLidar(dat);},ipaddress);
     robotCom.setRobotParameters([this](const TKobukiData& dat)->int{return processThisRobot(dat);},ipaddress);
-  #ifndef DISABLE_OPENCV
+#ifndef DISABLE_OPENCV
     robotCom.setCameraParameters(std::bind(&robot::processThisCamera,this,std::placeholders::_1),"http://"+ipaddress+":8000/stream.mjpg");
 #endif
-   #ifndef DISABLE_SKELETON
-      robotCom.setSkeletonParameters(std::bind(&robot::processThisSkeleton,this,std::placeholders::_1));
+#ifndef DISABLE_SKELETON
+    robotCom.setSkeletonParameters(std::bind(&robot::processThisSkeleton,this,std::placeholders::_1));
 #endif
-    ///ked je vsetko nasetovane tak to tento prikaz spusti (ak nieco nieje setnute,tak to normalne nenastavi.cize ak napr nechcete kameru,vklude vsetky info o nej vymazte)
+
     robotCom.robotStart();
-
-
 }
 
 void robot::setSpeedVal(double forw, double rots)
@@ -67,9 +253,9 @@ void robot::setSpeed(double forw, double rots)
 {
     setSpeedVal(forw, rots);
 }
+
 void robot::startPoseControl(double gx_cm, double gy_cm)
 {
-    //dostane cielove suradnice
     std::lock_guard<std::mutex> lk(controlMtx);
     goalX_cm = gx_cm;
     goalY_cm = gy_cm;
@@ -77,7 +263,7 @@ void robot::startPoseControl(double gx_cm, double gy_cm)
     useDirectCommands = 0;
     prevChosenDirRad = 0.0;
 }
-//zastavenie
+
 void robot::stopPoseControl()
 {
     std::lock_guard<std::mutex> lk(controlMtx);
@@ -85,6 +271,7 @@ void robot::stopPoseControl()
     forwardspeed = 0.0;
     rotationspeed = 0.0;
 }
+
 double robot::computeAvoidanceDirection(double goalDirRad,
                                         double &frontMinCm,
                                         bool &haveCandidate)
@@ -122,35 +309,31 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 
     for(const auto &ld : lidar)
     {
-
-        const double distCm = static_cast<double>(ld.scanDistance) / 10.0; // mm -> cm
-        if(distCm < 1.0 || distCm > histogramRangeCm) //ignorovanie prilis blizkych alebo vzdialenych bodov
+        const double distCm = static_cast<double>(ld.scanDistance) / 10.0;
+        if(distCm < 1.0 || distCm > histogramRangeCm)
             continue;
 
-        // laser je ľavotočivý
         double angDeg = normalizeAngleDeg(-static_cast<double>(ld.scanAngle));
 
         if(angDeg < vfhMinAngleDeg || angDeg > vfhMaxAngleDeg)
             continue;
 
-        //sledovanie minimalnej prekazky pred robotom - uvidime ci nechame
         if(std::fabs(angDeg) <= 15.0)
             frontMinCm = std::min(frontMinCm, distCm);
 
-        const double safeRadius = robotRadiusCm + safetyMarginCm; //15+7
-        const double ratio = clamp(safeRadius / std::max(distCm, safeRadius + 1.0), 0.0, 1.0); //pomer do asin
+        const double safeRadius = robotRadiusCm + safetyMarginCm;
+        const double ratio = clamp(safeRadius / std::max(distCm, safeRadius + 1.0), 0.0, 1.0);
         const double enlargeDeg = rad2deg(std::asin(ratio));
 
         const double mag = histogramRangeCm - distCm;
 
-        //interval prekazky z 6 strany
         const int s0 = angleToSector(angDeg - enlargeDeg);
         const int s1 = angleToSector(angDeg + enlargeDeg);
-        //zapis do histogramu
+
         for(int s = s0; s <= s1; ++s)
             hist[s] = std::max(hist[s], mag);
     }
-    // podmienky 8 strana
+
     if(!prevBlockedInitialized || static_cast<int>(prevBlocked.size()) != vfhSectorCount)
     {
         prevBlocked.assign(vfhSectorCount, false);
@@ -160,17 +343,11 @@ double robot::computeAvoidanceDirection(double goalDirRad,
     for(int s = 0; s < vfhSectorCount; ++s)
     {
         if(hist[s] >= histHigh)
-        {
             blocked[s] = true;
-        }
         else if(hist[s] <= histLow)
-        {
             blocked[s] = false;
-        }
         else
-        {
             blocked[s] = prevBlocked[s];
-        }
     }
 
     prevBlocked = blocked;
@@ -186,11 +363,11 @@ double robot::computeAvoidanceDirection(double goalDirRad,
     int i = 0;
     while(i < vfhSectorCount)
     {
-        while(i < vfhSectorCount && blocked[i]) ++i; //zacne pri neblokovanom
+        while(i < vfhSectorCount && blocked[i]) ++i;
         if(i >= vfhSectorCount) break;
 
         const int start = i;
-        while(i < vfhSectorCount && !blocked[i]) ++i; //konci na blokovanom
+        while(i < vfhSectorCount && !blocked[i]) ++i;
         const int end = i - 1;
 
         gaps.push_back({start, end});
@@ -217,19 +394,17 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 
     for(const auto &g : gaps)
     {
-        const double leftDeg  = sectorCenterDeg(g.a); //lavy okraj(uhol)
-        const double rightDeg = sectorCenterDeg(g.b); //pravy okraj(uhol)
-        const double widthDeg = (g.b - g.a + 1) * sectorWidthDeg; //sirka priechodu
+        const double leftDeg  = sectorCenterDeg(g.a);
+        const double rightDeg = sectorCenterDeg(g.b);
+        const double widthDeg = (g.b - g.a + 1) * sectorWidthDeg;
 
         const bool goalInside = (goalDeg >= leftDeg && goalDeg <= rightDeg);
         if(goalInside)
             candidatesDeg.push_back(goalDeg);
 
-        if(widthDeg < wideGapDeg) //ak uzky priechod (<24)
-        {
-            candidatesDeg.push_back(0.5 * (leftDeg + rightDeg)); //stred
-        }
-        else //na kraje str.12
+        if(widthDeg < wideGapDeg)
+            candidatesDeg.push_back(0.5 * (leftDeg + rightDeg));
+        else
         {
             candidatesDeg.push_back(leftDeg  + edgeOffsetDeg);
             candidatesDeg.push_back(rightDeg - edgeOffsetDeg);
@@ -252,7 +427,7 @@ double robot::computeAvoidanceDirection(double goalDirRad,
         const double smoothErr = std::fabs(normalizeAngleDeg(cand - prevDeg));
         const double centerErr = std::fabs(cand);
 
-        const double cost = 1.0 * goalErr + 0.3 * centerErr + 0.2 * smoothErr; //rovnica 13.str
+        const double cost = 1.0 * goalErr + 0.3 * centerErr + 0.2 * smoothErr;
 
         if(cost < bestCost)
         {
@@ -265,14 +440,12 @@ double robot::computeAvoidanceDirection(double goalDirRad,
     prevChosenDirRad = deg2rad(bestDeg);
     return prevChosenDirRad;
 }
-///toto je calback na data z robota, ktory ste podhodili robotu vo funkcii initAndStartRobot
-/// vola sa vzdy ked dojdu nove data z robota. nemusite nic riesit, proste sa to stane
+
 int robot::processThisRobot(const TKobukiData &robotdata)
 {
+    static std::uint32_t prevTsOmega = 0;
+    static double prevFiOmega = 0.0;
 
-
-    ///tu mozete robit s datami z robota
-    //ODOMETRIA
     const double gyroRadAbs = gyroRawToRad(static_cast<double>(robotdata.GyroAngle));
 
     if(!odomInitialized)
@@ -280,9 +453,17 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         lastEncL = static_cast<std::uint16_t>(robotdata.EncoderLeft);
         lastEncR = static_cast<std::uint16_t>(robotdata.EncoderRight);
 
-        gyroOffsetRad = gyroRadAbs; // fi=0 pri štarte
-        fi = 0.0;
+        gyroOffsetRad = gyroRadAbs;
 
+        {
+            std::lock_guard<std::mutex> lk(poseMtx);
+            x = 0.0;
+            y = 0.0;
+            fi = 0.0;
+        }
+
+        prevTsOmega = robotdata.synctimestamp;
+        prevFiOmega = 0.0;
         odomInitialized = true;
     }
     else
@@ -298,48 +479,73 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         lastEncL = encL;
         lastEncR = encR;
 
-        const double tickToMeter = static_cast<double>(robotCom.getTickToMeter()); // [m/tick]
-        const double dL = static_cast<double>(dTicksL) * tickToMeter; // [m]
-        const double dR = static_cast<double>(dTicksR) * tickToMeter; // [m]
+        const double tickToMeter = static_cast<double>(robotCom.getTickToMeter());
+        const double dL = static_cast<double>(dTicksL) * tickToMeter;
+        const double dR = static_cast<double>(dTicksR) * tickToMeter;
 
-        // krok v centimetroch
         const double l_cm = 0.5 * (dL + dR) * 100.0;
-        //vzorce 10. str
-        x += l_cm * std::cos(fi);
-        y += l_cm * std::sin(fi);
 
-        fi = newFi;
+        {
+            std::lock_guard<std::mutex> lk(poseMtx);
+            const double oldFi = fi;
+            const double fiMid = normalizeAngleRad(oldFi + 0.5 * normalizeAngleRad(newFi - oldFi));
+
+            x += l_cm * std::cos(fiMid);
+            y += l_cm * std::sin(fiMid);
+            fi = newFi;
+        }
     }
 
+    {
+        double px, py, pfi;
+        {
+            std::lock_guard<std::mutex> lk(poseMtx);
+            px = x;
+            py = y;
+            pfi = fi;
+        }
 
+        if(prevTsOmega != 0 && robotdata.synctimestamp > prevTsOmega)
+        {
+            const double dt = static_cast<double>(robotdata.synctimestamp - prevTsOmega) / 1e6;
+            if(dt > 0.0)
+                currentOmegaRad = normalizeAngleRad(pfi - prevFiOmega) / dt;
+        }
 
-///TU PISTE KOD... TOTO JE TO MIESTO KED NEVIETE KDE ZACAT,TAK JE TO NAOZAJ TU. AK AJ TAK NEVIETE, SPYTAJTE SA CVICIACEHO MA TU NATO STRING KTORY DA DO HLADANIA XXX
+        prevTsOmega = robotdata.synctimestamp;
+        prevFiOmega = pfi;
 
-    ///kazdy piaty krat, aby to ui moc nepreblikavalo..
+        std::lock_guard<std::mutex> lk(poseHistoryMtx);
+        TimedPose tp;
+        tp.ts_us = robotdata.synctimestamp;
+        tp.x_cm = px;
+        tp.y_cm = py;
+        tp.fi_rad = pfi;
+        poseHistory.push_back(tp);
+
+        while(poseHistory.size() > 4000)
+            poseHistory.pop_front();
+    }
+
     if(datacounter%5==0)
     {
+        double px, py, pfi;
+        {
+            std::lock_guard<std::mutex> lk(poseMtx);
+            px = x;
+            py = y;
+            pfi = fi;
+        }
 
-        ///ak nastavite hodnoty priamo do prvkov okna,ako je to na tychto zakomentovanych riadkoch tak sa moze stat ze vam program padne
-        // ui->lineEdit_2->setText(QString::number(robotdata.EncoderRight));
-        //ui->lineEdit_3->setText(QString::number(robotdata.EncoderLeft));
-        //ui->lineEdit_4->setText(QString::number(robotdata.GyroAngle));
-        /// lepsi pristup je nastavit len nejaku premennu, a poslat signal oknu na prekreslenie
-        /// okno pocuva vo svojom slote a vasu premennu nastavi tak ako chcete. prikaz emit to presne takto spravi
-        /// viac o signal slotoch tu: https://doc.qt.io/qt-5/signalsandslots.html
-        ///posielame sem nezmysli.. pohrajte sa nech sem idu zmysluplne veci
-        const double fiDeg = fi * 180.0 / kPi;
-        emit publishPosition(x, y, fiDeg);
-        ///toto neodporucam na nejake komplikovane struktury.signal slot robi kopiu dat. radsej vtedy posielajte
-        /// prazdny signal a slot bude vykreslovat strukturu (vtedy ju musite mat samozrejme ako member premmennu v mainwindow.ak u niekoho najdem globalnu premennu,tak bude cistit bludisko zubnou kefkou.. kefku dodam)
-        /// vtedy ale odporucam pouzit mutex, aby sa vam nestalo ze budete pocas vypisovania prepisovat niekde inde
-
+        const double fiDeg = pfi * 180.0 / kPi;
+        emit publishPosition(px, py, fiDeg);
     }
-    ///---tu sa posielaju rychlosti do robota... vklude zakomentujte ak si chcete spravit svoje
+
     if(useDirectCommands==0)
     {
-        double desForw = forwardspeed;   // [mm/s]
-        double desRot  = rotationspeed;  // [rad/s]
-        // ZDRUZENÝ REGULÁTOR POLOHY
+        double desForw = forwardspeed;
+        double desRot  = rotationspeed;
+
         bool active;
         double gx, gy;
         {
@@ -349,12 +555,19 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             gy = goalY_cm;
         }
 
+        double px, py, pfi;
+        {
+            std::lock_guard<std::mutex> lk(poseMtx);
+            px = x;
+            py = y;
+            pfi = fi;
+        }
+
         if(active)
         {
-            //rozdiely
-            const double dx = gx - x;
-            const double dy = gy - y;
-            const double rho = std::sqrt(dx*dx + dy*dy); // [cm]
+            const double dx = gx - px;
+            const double dy = gy - py;
+            const double rho = std::sqrt(dx*dx + dy*dy);
 
             if(rho <= posDeadbandCm)
             {
@@ -365,10 +578,8 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             }
             else
             {
-                //smerovanie
                 const double heading = std::atan2(dy, dx);
-                //chyba uhlova
-                const double alphaGoal = normalizeAngleRad(heading - fi);
+                const double alphaGoal = normalizeAngleRad(heading - pfi);
 
                 double frontMinCm = std::numeric_limits<double>::infinity();
                 bool haveCandidate = false;
@@ -377,7 +588,6 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 if(avoidanceEnabled)
                     alphaCmd = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
 
-                // ak v predu prekazka tak zastav
                 if(frontMinCm < frontStopCm && std::fabs(alphaCmd) < deg2rad(20.0))
                 {
                     desForw = 0.0;
@@ -405,12 +615,11 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                         rotScale = 0.5;
 
                     desRot = clamp(kpAng * alphaCmd, -wMax * rotScale, wMax * rotScale);
-
                     desForw = clamp(kpDist * rho * steerScale * frontScale, 0.0, vMax);
                 }
             }
         }
-        // deadband
+
         const double forwDeadband = 5.0;
         const double rotDeadband  = 0.05;
         if (std::fabs(desForw) <= forwDeadband) desForw = 0.0;
@@ -419,7 +628,6 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         if(!active && desForw != 0.0 && desRot != 0.0)
             desForw = 0.0;
 
-        // cas pre rampu
         auto now = std::chrono::steady_clock::now();
         double dt = std::chrono::duration<double>(now - lastRampTs).count();
         lastRampTs = now;
@@ -448,7 +656,6 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         accelOnly(curForwCmd, desForw, maxAccelForw);
         accelOnly(curRotCmd,  desRot,  maxAccelRot);
 
-        // Pošli do robota
         if(curForwCmd == 0.0 && curRotCmd == 0.0)
         {
             robotCom.setTranslationSpeed(0);
@@ -463,19 +670,16 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         }
         else
         {
-            double radius = curForwCmd / curRotCmd; // mm
-            radius = clamp(radius, -100000.0, 100000.0); // bezpečný limit
+            double radius = curForwCmd / curRotCmd;
+            radius = clamp(radius, -100000.0, 100000.0);
             robotCom.setArcSpeed(static_cast<int>(curForwCmd), static_cast<int>(radius));
         }
     }
+
     datacounter++;
-
     return 0;
-
 }
 
-///toto je calback na data z lidaru, ktory ste podhodili robotu vo funkcii initAndStartRobot
-/// vola sa ked dojdu nove data z lidaru
 int robot::processThisLidar(const std::vector<LaserData>& laserData)
 {
     {
@@ -483,33 +687,29 @@ int robot::processThisLidar(const std::vector<LaserData>& laserData)
         latestLidar = laserData;
     }
 
+    updateMapFromLidar(laserData);
+
     copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);
 
     return 0;
 }
 
-  #ifndef DISABLE_OPENCV
-///toto je calback na data z kamery, ktory ste podhodili robotu vo funkcii initAndStartRobot
-/// vola sa ked dojdu nove data z kamery
+#ifndef DISABLE_OPENCV
 int robot::processThisCamera(cv::Mat cameraData)
 {
-
-    cameraData.copyTo(frame[(actIndex+1)%3]);//kopirujem do nasej strukury
-    actIndex=(actIndex+1)%3;//aktualizujem kde je nova fotka
+    cameraData.copyTo(frame[(actIndex+1)%3]);
+    actIndex=(actIndex+1)%3;
 
     emit publishCamera(frame[actIndex]);
     return 0;
 }
 #endif
 
-  #ifndef DISABLE_SKELETON
-/// vola sa ked dojdu nove data z trackera
+#ifndef DISABLE_SKELETON
 int robot::processThisSkeleton(skeleton skeledata)
 {
-
     memcpy(&skeleJoints,&skeledata,sizeof(skeleton));
-
     emit publishSkeleton(skeleJoints);
     return 0;
 }

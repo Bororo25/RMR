@@ -1,5 +1,6 @@
 #ifndef ROBOT_H
 #define ROBOT_H
+
 #include "librobot/librobot.h"
 #include <QObject>
 #include <QWidget>
@@ -8,6 +9,8 @@
 #include <mutex>
 #include <chrono>
 #include <limits>
+#include <vector>
+#include <deque>
 
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
@@ -20,191 +23,229 @@
 
 Q_DECLARE_METATYPE(cv::Mat)
 #endif
+
 #ifndef DISABLE_SKELETON
 Q_DECLARE_METATYPE(skeleton)
 #endif
+
 Q_DECLARE_METATYPE(std::vector<LaserData>)
-class robot : public QObject {
-  Q_OBJECT
+
+class robot : public QObject
+{
+    Q_OBJECT
+
 public:
-  explicit robot(QObject *parent = nullptr);
+    explicit robot(QObject *parent = nullptr);
 
-  void initAndStartRobot(std::string ipaddress);
+    void initAndStartRobot(std::string ipaddress);
 
-  // tato funkcia len nastavuje hodnoty.. posielaju sa v callbacku(dobre, kvoli
-  // asynchronnosti a zabezpeceniu,ze sa poslu len raz pri viacero prepisoch
-  // vramci callu)
-  void setSpeedVal(double forw, double rots);
-  // tato funkcia fyzicky posiela hodnoty do robota
-  void setSpeed(double forw, double rots);
+    void setSpeedVal(double forw, double rots);
+    void setSpeed(double forw, double rots);
 
-  //funkcie na polohovanie
-  void startPoseControl(double goalX_cm, double goalY_cm);
-  void stopPoseControl();
+    void startPoseControl(double goalX_cm, double goalY_cm);
+    void stopPoseControl();
+
+    std::vector<std::vector<int8_t>> getOccupancyGrid();
 
 signals:
-  void publishPosition(double x, double y, double z);
-  void publishLidar(const std::vector<LaserData> &lidata);
+    void publishPosition(double x, double y, double z);
+    void publishLidar(const std::vector<LaserData> &lidata);
+
 #ifndef DISABLE_OPENCV
-  void publishCamera(const cv::Mat &camframe);
+    void publishCamera(const cv::Mat &camframe);
 #endif
+
 #ifndef DISABLE_SKELETON
-  void publishSkeleton(const skeleton &skeledata);
+    void publishSkeleton(const skeleton &skeledata);
 #endif
+
 private:
-  /// toto su vase premenne na vasu odometriu
+    // --- ODOMETRIA ---
+    double x;   // [cm]
+    double y;   // [cm]
+    double fi;  // [rad]
 
-  double x;  // [cm]
-  double y;  // [cm]
-  double fi; // [rad]
-  // --- ODOMETRIA  ---
-  bool odomInitialized = false;
-  std::uint16_t lastEncL = 0;
-  std::uint16_t lastEncR = 0;
-  double gyroOffsetRad = 0.0;
+    std::mutex poseMtx;
 
-  // --- RAMPA ---
-  double curForwCmd = 0.0; // [mm/s]
-  double curRotCmd  = 0.0; // [rad/s]
+    bool odomInitialized = false;
+    std::uint16_t lastEncL = 0;
+    std::uint16_t lastEncR = 0;
+    double gyroOffsetRad = 0.0;
 
-  // max. akcelerácie (rozbeh)
-  double maxAccelForw = 250; // [mm/s^2]
-  double maxAccelRot  = 2.5;   // [rad/s^2]
+    // --- RAMPA ---
+    double curForwCmd = 0.0; // [mm/s]
+    double curRotCmd  = 0.0; // [rad/s]
 
-  // čas poslednej rampy
-  std::chrono::steady_clock::time_point lastRampTs;
-  // --- POLOHOVANIE (združený regulátor) ---
-  std::mutex controlMtx;
-  bool poseControlActive = false;
-  double goalX_cm = 0.0;
-  double goalY_cm = 0.0;
+    double maxAccelForw = 250.0; // [mm/s^2]
+    double maxAccelRot  = 2.5;   // [rad/s^2]
 
-  // --- VYHÝBANIE SA PREKÁŽKAM (zjednodušené VFH+) ---
-  std::mutex lidarMtx;
-  std::vector<LaserData> latestLidar;
+    std::chrono::steady_clock::time_point lastRampTs;
 
-  bool avoidanceEnabled = true;
+    // --- POLOHOVANIE ---
+    std::mutex controlMtx;
+    bool poseControlActive = false;
+    double goalX_cm = 0.0;
+    double goalY_cm = 0.0;
 
-  int vfhSectorCount = 72;              // 72 sektorov => 2.5° na sektor
-  double vfhMinAngleDeg = -180.0;        // sledujeme predný polpriestor
-  double vfhMaxAngleDeg =  180.0;
+    // --- VYHÝBANIE SA PREKÁŽKAM (VFH) ---
+    std::mutex lidarMtx;
+    std::vector<LaserData> latestLidar;
 
-  double histogramRangeCm = 180.0;      // do akej vzdialenosti berieme prekážky
-  double robotRadiusCm    = 15.0;       // šírka robota
-  double safetyMarginCm   = 10;       // rezerva popri prekážke
-  double frontStopCm      = 30.0;       // ak je niečo veľmi blízko vpredu, netlač dopredu
+    bool avoidanceEnabled = true;
 
-  double wideGapDeg       = 24.0;       // od tejto šírky ber medzeru ako "širokú"
-  double edgeOffsetDeg    = 0.00;       // kandidát vo vnútri kraja priechodu
+    int vfhSectorCount = 72;
+    double vfhMinAngleDeg = -180.0;
+    double vfhMaxAngleDeg = 180.0;
 
-  double histLow  = 110;   // dolný prah hysterézie
-  double histHigh = 140;   // horný prah hysterézie
+    double histogramRangeCm = 180.0;
+    double robotRadiusCm    = 15.0;
+    double safetyMarginCm   = 10.0;
+    double frontStopCm      = 30.0;
 
-  std::vector<bool> prevBlocked;
-  bool prevBlockedInitialized = false;     // prah blokovaného sektora
-  double obstacleSlowBandCm = 80.0;     // pri blízkej prekážke spomaľuj
+    double wideGapDeg    = 24.0;
+    double edgeOffsetDeg = 0.0;
 
-  double prevChosenDirRad = 0.0;        // kvôli hladšiemu výberu kandidáta
+    double histLow  = 110.0;
+    double histHigh = 140.0;
 
-  static inline double deg2rad(double d)
-  {
-      return d * (kPi / 180.0);
-  }
+    std::vector<bool> prevBlocked;
+    bool prevBlockedInitialized = false;
+    double obstacleSlowBandCm = 80.0;
 
-  static inline double rad2deg(double r)
-  {
-      return r * (180.0 / kPi);
-  }
+    double prevChosenDirRad = 0.0;
 
-  static inline double normalizeAngleDeg(double a)
-  {
-      while (a > 180.0) a -= 360.0;
-      while (a < -180.0) a += 360.0;
-      return a;
-  }
+    // --- MAPOVANIE / SYNCHRONIZÁCIA ---
+    struct TimedPose
+    {
+        std::uint32_t ts_us;
+        double x_cm;
+        double y_cm;
+        double fi_rad;
+    };
 
-  double computeAvoidanceDirection(double goalDirRad,
-                                   double &frontMinCm,
-                                   bool &haveCandidate);
+    std::mutex poseHistoryMtx;
+    std::deque<TimedPose> poseHistory;
 
+    double currentOmegaRad = 0.0;
 
-  double kpDist = 7;
-  double kpAng  = 1.8;
+    std::mutex mapMtx;
 
-  double vMax = 350;                    // [mm/s]
-  double wMax = (kPi/2);                // [rad/s]
+    double mapResolutionCm = 8.0;
+    int mapWidthCells  = 280;
+    int mapHeightCells = 280;
+    int mapOriginCellX = mapWidthCells / 2;
+    int mapOriginCellY = mapHeightCells / 2;
 
-  double posDeadbandCm = 8;
-  double rotateOnlyRad = (45.0 * kPi/180.0);
+    std::vector<std::vector<int8_t>> occupancyGrid;
+    std::vector<std::vector<uint16_t>> hitGrid;
+    std::vector<std::vector<uint16_t>> freeGrid;
 
-  static inline double clamp(double v, double lo, double hi)
-  {
-      return (v < lo) ? lo : ((v > hi) ? hi : v);
-  }
-  static constexpr double kPi = 3.14159265358979323846;
+    bool interpolatePose(std::uint32_t ts_us, double &ix, double &iy, double &ifi);
+    static double interpAngle(double a0, double a1, double t);
 
-  static inline std::int16_t ticksDiff(std::uint16_t now, std::uint16_t prev)
-  {
-      const std::uint16_t delta = static_cast<std::uint16_t>(now - prev);
-      return static_cast<std::int16_t>(delta);
-  }
+    void initOccupancyGrid();
+    bool worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const;
+    void markCellFree(int mx, int my);
+    void markCellOccupied(int mx, int my);
+    void raytraceFreeCells(int x0, int y0, int x1, int y1);
+    void updateMapFromLidar(const std::vector<LaserData> &laserData);
 
-  static inline double normalizeAngleRad(double a)
-  {
-      while (a > kPi) a -= 2.0 * kPi;
-      while (a < -kPi) a += 2.0 * kPi;
-      return a;
-  }
+    static inline double deg2rad(double d)
+    {
+        return d * (kPi / 180.0);
+    }
 
-//pohyb dopredu o maxstep
-  static inline double stepTowards(double cur, double target, double maxStep)
-  {
-      const double diff = target - cur;
-      if (std::fabs(diff) <= maxStep) return target;
-      return cur + (diff > 0 ? maxStep : -maxStep);
-  }
+    static inline double rad2deg(double r)
+    {
+        return r * (180.0 / kPi);
+    }
 
-  static inline double gyroRawToRad(double gyroRaw)
-  {
-      const double deg = gyroRaw / 100.0;
-      return deg * (kPi / 180.0);
-  }
+    static inline double normalizeAngleDeg(double a)
+    {
+        while(a > 180.0) a -= 360.0;
+        while(a < -180.0) a += 360.0;
+        return a;
+    }
 
+    double computeAvoidanceDirection(double goalDirRad,
+                                     double &frontMinCm,
+                                     bool &haveCandidate);
 
-  ///-----------------------------
-  /// toto su rychlosti ktore sa nastavuju setSpeedVal a posielaju v
-  /// processThisRobot
-  double forwardspeed;  // mm/s
-  double rotationspeed; // omega/s
+    double kpDist = 7.0;
+    double kpAng  = 1.8;
 
-  /// toto su callbacky co sa sa volaju s novymi datami
-  int processThisLidar(const std::vector<LaserData> &laserData);
-  int processThisRobot(const TKobukiData &robotdata);
+    double vMax = 350.0;       // [mm/s]
+    double wMax = (kPi / 2.0); // [rad/s]
+
+    double posDeadbandCm = 8.0;
+    double rotateOnlyRad = (45.0 * kPi / 180.0);
+
+    static inline double clamp(double v, double lo, double hi)
+    {
+        return (v < lo) ? lo : ((v > hi) ? hi : v);
+    }
+
+    static constexpr double kPi = 3.14159265358979323846;
+
+    static inline std::int16_t ticksDiff(std::uint16_t now, std::uint16_t prev)
+    {
+        const std::uint16_t delta = static_cast<std::uint16_t>(now - prev);
+        return static_cast<std::int16_t>(delta);
+    }
+
+    static inline double normalizeAngleRad(double a)
+    {
+        while(a > kPi) a -= 2.0 * kPi;
+        while(a < -kPi) a += 2.0 * kPi;
+        return a;
+    }
+
+    static inline double stepTowards(double cur, double target, double maxStep)
+    {
+        const double diff = target - cur;
+        if(std::fabs(diff) <= maxStep) return target;
+        return cur + (diff > 0.0 ? maxStep : -maxStep);
+    }
+
+    static inline double gyroRawToRad(double gyroRaw)
+    {
+        const double deg = gyroRaw / 100.0;
+        return deg * (kPi / 180.0);
+    }
+
+    // --- RIADENIE / CALLBACKY ---
+    double forwardspeed;   // [mm/s]
+    double rotationspeed;  // [rad/s]
+
+    int processThisLidar(const std::vector<LaserData> &laserData);
+    int processThisRobot(const TKobukiData &robotdata);
+
 #ifndef DISABLE_OPENCV
-  int processThisCamera(cv::Mat cameraData);
+    int processThisCamera(cv::Mat cameraData);
 #endif
 
-  /// pomocne strukutry aby ste si trosku nerobili race conditions
-  std::vector<LaserData> copyOfLaserData;
-#ifndef DISABLE_OPENCV
-  cv::Mat frame[3];
-#endif
-  /// classa ktora riesi komunikaciu s robotom
-  libRobot robotCom;
+    std::vector<LaserData> copyOfLaserData;
 
-  /// pomocne premenne... moc nerieste naco su
-  int datacounter;
 #ifndef DISABLE_OPENCV
-  bool useCamera1;
-  int actIndex;
+    cv::Mat frame[3];
+#endif
+
+    libRobot robotCom;
+
+    int datacounter = 0;
+
+#ifndef DISABLE_OPENCV
+    bool useCamera1 = false;
+    int actIndex = -1;
 #endif
 
 #ifndef DISABLE_SKELETON
-  int processThisSkeleton(skeleton skeledata);
-  int updateSkeletonPicture;
-  skeleton skeleJoints;
+    int processThisSkeleton(skeleton skeledata);
+    int updateSkeletonPicture = 0;
+    skeleton skeleJoints;
 #endif
-  int useDirectCommands;
+
+    int useDirectCommands = 0;
 };
 
 #endif // ROBOT_H
