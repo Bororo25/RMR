@@ -266,8 +266,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         goalXcm = goalX;
         goalYcm = goalY;
         update();
-        //zapnutie regulacie polohy
-        _robot.startPoseControl(goalX, goalY);
+
+        //uloha4
+        // najprv sa pokúsime naplánovať cestu cez okupačnú mriežku
+        // ak plánovanie zlyhá, použije sa pôvodné priame polohovanie
+        if(!_robot.planPathToGoal(goalX, goalY))
+            _robot.startPoseControl(goalX, goalY);
+
         return true;
     }
     return QMainWindow::eventFilter(obj, event);

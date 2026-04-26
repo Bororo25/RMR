@@ -9,9 +9,12 @@
 #include <chrono>
 #include <limits>
 
-//uolha3
+//uloha3
 #include <vector>
 #include <deque>
+
+//uloha4
+#include <queue>
 
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
@@ -48,6 +51,9 @@ public:
 
   //uloha3
   std::vector<std::vector<int8_t>> getOccupancyGrid();
+
+  //uloha4
+  bool planPathToGoal(double goalX_cm, double goalY_cm);
 
 signals:
   void publishPosition(double x, double y, double z);
@@ -148,6 +154,38 @@ private:
   std::vector<std::vector<int8_t>> occupancyGrid;
   std::vector<std::vector<uint16_t>> hitGrid;
   std::vector<std::vector<uint16_t>> freeGrid;
+
+  //uloha4
+  // bod v mape - index bunky
+  struct GridPoint
+  {
+      int x;
+      int y;
+  };
+
+  // bod vo svete - centimetre
+  struct WorldPoint
+  {
+      double x_cm;
+      double y_cm;
+  };
+
+  std::vector<WorldPoint> plannedPathCm;
+  int plannedPathIndex = 0;
+  bool followingPlannedPath = false;
+
+  // true = neznáme bunky berieme ako voľné, aby sa dalo plánovať aj v nie úplne vyfarbenej mape
+  // false = bezpečnejšie, ale plánovanie môže zlyhať, ak mapa nie je kompletne prejdená
+  bool planUnknownAsFree = true;
+
+  bool mapToWorld(int mx, int my, double &wx_cm, double &wy_cm) const;
+  bool makeInflatedObstacleGrid(std::vector<std::vector<uint8_t>> &blocked) const;
+  bool extractWavePath(const std::vector<std::vector<int>> &wave,
+                       const GridPoint &start,
+                       const GridPoint &goal,
+                       std::vector<GridPoint> &rawPath) const;
+  std::vector<GridPoint> simplifyPathToCorners(const std::vector<GridPoint> &rawPath) const;
+  void startNextPlannedWaypoint();
 
   bool interpolatePose(std::uint32_t ts_us, double &ix, double &iy, double &ifi);
   static double interpAngle(double a0, double a1, double t);

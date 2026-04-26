@@ -69,6 +69,331 @@ std::vector<std::vector<int8_t>> robot::getOccupancyGrid()
     return occupancyGrid;
 }
 
+//uloha4
+bool robot::mapToWorld(int mx, int my, double &wx_cm, double &wy_cm) const
+{
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return false;
+
+    wx_cm = static_cast<double>(mx - mapOriginCellX) * mapResolutionCm;
+    wy_cm = static_cast<double>(mapOriginCellY - my) * mapResolutionCm;
+
+    return true;
+}
+
+//uloha4
+bool robot::makeInflatedObstacleGrid(std::vector<std::vector<uint8_t>> &blocked) const
+{
+    blocked.assign(mapHeightCells, std::vector<uint8_t>(mapWidthCells, 0));
+
+    if(occupancyGrid.empty() || occupancyGrid[0].empty())
+        return false;
+
+    // prekážky zväčšíme o polomer robota + rezerva
+    const int inflateCells = static_cast<int>(
+        std::ceil((robotRadiusCm + safetyMarginCm) / mapResolutionCm));
+
+    for(int y0 = 0; y0 < mapHeightCells; ++y0)
+    {
+        for(int x0 = 0; x0 < mapWidthCells; ++x0)
+        {
+            const int8_t val = occupancyGrid[y0][x0];
+
+            // obsadená bunka
+            const bool occupied = (val >= 50);
+
+            // neznáma bunka - podľa prepínača planUnknownAsFree
+            const bool unknownBlocked = (val < 0 && !planUnknownAsFree);
+
+            if(!occupied && !unknownBlocked)
+                continue;
+
+            for(int dy = -inflateCells; dy <= inflateCells; ++dy)
+            {
+                for(int dx = -inflateCells; dx <= inflateCells; ++dx)
+                {
+                    if(dx*dx + dy*dy > inflateCells*inflateCells)
+                        continue;
+
+                    const int x1 = x0 + dx;
+                    const int y1 = y0 + dy;
+
+                    if(x1 < 0 || x1 >= mapWidthCells || y1 < 0 || y1 >= mapHeightCells)
+                        continue;
+
+                    blocked[y1][x1] = 1;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+//uloha4
+bool robot::extractWavePath(const std::vector<std::vector<int>> &wave,
+                            const GridPoint &start,
+                            const GridPoint &goal,
+                            std::vector<GridPoint> &rawPath) const
+{
+    rawPath.clear();
+
+    if(start.x < 0 || start.x >= mapWidthCells || start.y < 0 || start.y >= mapHeightCells)
+        return false;
+
+    if(goal.x < 0 || goal.x >= mapWidthCells || goal.y < 0 || goal.y >= mapHeightCells)
+        return false;
+
+    if(wave[start.y][start.x] < 0)
+        return false;
+
+    GridPoint cur = start;
+    rawPath.push_back(cur);
+
+    GridPoint prevDir{0, 0};
+
+    // poistka proti nekonečnej slučke
+    const int maxSteps = mapWidthCells * mapHeightCells;
+
+    for(int step = 0; step < maxSteps; ++step)
+    {
+        if(cur.x == goal.x && cur.y == goal.y)
+            return true;
+
+        const int curVal = wave[cur.y][cur.x];
+
+        // 4-susednosť - žiadne diagonály
+        const GridPoint dirs4[4] =
+            {
+                { 1,  0},
+                {-1,  0},
+                { 0,  1},
+                { 0, -1}
+            };
+
+        GridPoint best = cur;
+        int bestValue = curVal;
+
+        // 1. najprv skús pokračovať predchádzajúcim smerom
+        if(prevDir.x != 0 || prevDir.y != 0)
+        {
+            const int nx = cur.x + prevDir.x;
+            const int ny = cur.y + prevDir.y;
+
+            if(nx >= 0 && nx < mapWidthCells && ny >= 0 && ny < mapHeightCells)
+            {
+                if(wave[ny][nx] >= 0 && wave[ny][nx] < bestValue)
+                {
+                    bestValue = wave[ny][nx];
+                    best = {nx, ny};
+                }
+            }
+        }
+
+        // 2. ak predchádzajúci smer nejde, vyber najlepšiu susednú bunku
+        if(best.x == cur.x && best.y == cur.y)
+        {
+            for(const auto &d : dirs4)
+            {
+                const int nx = cur.x + d.x;
+                const int ny = cur.y + d.y;
+
+                if(nx < 0 || nx >= mapWidthCells || ny < 0 || ny >= mapHeightCells)
+                    continue;
+
+                if(wave[ny][nx] >= 0 && wave[ny][nx] < bestValue)
+                {
+                    bestValue = wave[ny][nx];
+                    best = {nx, ny};
+                }
+            }
+        }
+
+        if(best.x == cur.x && best.y == cur.y)
+            return false;
+
+        prevDir = {best.x - cur.x, best.y - cur.y};
+        cur = best;
+        rawPath.push_back(cur);
+    }
+
+    return false;
+}
+
+//uloha4
+std::vector<robot::GridPoint> robot::simplifyPathToCorners(const std::vector<GridPoint> &rawPath) const
+{
+    std::vector<GridPoint> corners;
+
+    if(rawPath.empty())
+        return corners;
+
+    if(rawPath.size() <= 2)
+    {
+        corners = rawPath;
+        return corners;
+    }
+
+    corners.push_back(rawPath.front());
+
+    GridPoint prevDir
+        {
+            rawPath[1].x - rawPath[0].x,
+            rawPath[1].y - rawPath[0].y
+        };
+
+    for(size_t i = 2; i < rawPath.size(); ++i)
+    {
+        GridPoint dir
+            {
+                rawPath[i].x - rawPath[i - 1].x,
+                rawPath[i].y - rawPath[i - 1].y
+            };
+
+        // zlomový bod je bunka pred zmenou smeru
+        if(dir.x != prevDir.x || dir.y != prevDir.y)
+        {
+            corners.push_back(rawPath[i - 1]);
+            prevDir = dir;
+        }
+    }
+
+    corners.push_back(rawPath.back());
+
+    return corners;
+}
+
+//uloha4
+bool robot::planPathToGoal(double gx_cm, double gy_cm)
+{
+    GridPoint start;
+    GridPoint goal;
+
+    {
+        std::lock_guard<std::mutex> lk(mapMtx);
+
+        if(!worldToMap(x, y, start.x, start.y))
+            return false;
+
+        if(!worldToMap(gx_cm, gy_cm, goal.x, goal.y))
+            return false;
+
+        std::vector<std::vector<uint8_t>> blocked;
+        if(!makeInflatedObstacleGrid(blocked))
+            return false;
+
+        // štart a cieľ musia zostať priechodné aj po nafúknutí
+        blocked[start.y][start.x] = 0;
+        blocked[goal.y][goal.x] = 0;
+
+        std::vector<std::vector<int>> wave(
+            mapHeightCells,
+            std::vector<int>(mapWidthCells, -1));
+
+        std::queue<GridPoint> q;
+
+        wave[goal.y][goal.x] = 0;
+        q.push(goal);
+
+        // 4-susednosť - týmto zakazujeme diagonálne smery
+        const GridPoint dirs4[4] =
+            {
+                { 1,  0},
+                {-1,  0},
+                { 0,  1},
+                { 0, -1}
+            };
+
+        while(!q.empty())
+        {
+            GridPoint cur = q.front();
+            q.pop();
+
+            for(const auto &d : dirs4)
+            {
+                const int nx = cur.x + d.x;
+                const int ny = cur.y + d.y;
+
+                if(nx < 0 || nx >= mapWidthCells || ny < 0 || ny >= mapHeightCells)
+                    continue;
+
+                if(blocked[ny][nx])
+                    continue;
+
+                if(wave[ny][nx] >= 0)
+                    continue;
+
+                wave[ny][nx] = wave[cur.y][cur.x] + 1;
+                q.push({nx, ny});
+            }
+        }
+
+        if(wave[start.y][start.x] < 0)
+            return false;
+
+        std::vector<GridPoint> rawPath;
+        if(!extractWavePath(wave, start, goal, rawPath))
+            return false;
+
+        std::vector<GridPoint> corners = simplifyPathToCorners(rawPath);
+
+        plannedPathCm.clear();
+
+        // prvý bod je aktuálna bunka robota, ten netreba posielať ako cieľ
+        for(size_t i = 1; i < corners.size(); ++i)
+        {
+            double wx, wy;
+            if(mapToWorld(corners[i].x, corners[i].y, wx, wy))
+                plannedPathCm.push_back({wx, wy});
+        }
+
+        // pre istotu posledný bod nastavíme presne na kliknutý cieľ,
+        // nie iba na stred cieľovej bunky
+        if(!plannedPathCm.empty())
+        {
+            plannedPathCm.back().x_cm = gx_cm;
+            plannedPathCm.back().y_cm = gy_cm;
+        }
+    }
+
+    if(plannedPathCm.empty())
+        return false;
+
+    plannedPathIndex = 0;
+    followingPlannedPath = true;
+
+    {
+        std::lock_guard<std::mutex> lk(controlMtx);
+        goalX_cm = plannedPathCm[plannedPathIndex].x_cm;
+        goalY_cm = plannedPathCm[plannedPathIndex].y_cm;
+        poseControlActive = true;
+        useDirectCommands = 0;
+    }
+
+    return true;
+}
+
+//uloha4
+void robot::startNextPlannedWaypoint()
+{
+    if(!followingPlannedPath)
+        return;
+
+    ++plannedPathIndex;
+
+    if(plannedPathIndex >= static_cast<int>(plannedPathCm.size()))
+    {
+        followingPlannedPath = false;
+        return;
+    }
+
+    std::lock_guard<std::mutex> lk(controlMtx);
+    goalX_cm = plannedPathCm[plannedPathIndex].x_cm;
+    goalY_cm = plannedPathCm[plannedPathIndex].y_cm;
+    poseControlActive = true;
+    useDirectCommands = 0;
+}
+
 bool robot::worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const
 {
     mx = static_cast<int>(std::round(wx_cm / mapResolutionCm)) + mapOriginCellX;
@@ -243,6 +568,12 @@ void robot::setSpeed(double forw, double rots)
 }
 void robot::startPoseControl(double gx_cm, double gy_cm)
 {
+    //uloha4
+    // pri obyčajnom kliknutí bez plánovania zrušíme starú naplánovanú cestu
+    followingPlannedPath = false;
+    plannedPathCm.clear();
+    plannedPathIndex = 0;
+
     std::lock_guard<std::mutex> lk(controlMtx);
     goalX_cm = gx_cm;
     goalY_cm = gy_cm;
@@ -259,6 +590,11 @@ void robot::startPoseControl(double gx_cm, double gy_cm)
 //zastavenie
 void robot::stopPoseControl()
 {
+    //uloha4
+    followingPlannedPath = false;
+    plannedPathCm.clear();
+    plannedPathIndex = 0;
+
     std::lock_guard<std::mutex> lk(controlMtx);
     poseControlActive = false;
     forwardspeed = 0.0;
@@ -709,8 +1045,21 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 curForwCmd = 0.0;
                 curRotCmd  = 0.0;
 
-                std::lock_guard<std::mutex> lk(controlMtx);
-                poseControlActive = false;
+                bool goNextWaypoint = false;
+
+                {
+                    std::lock_guard<std::mutex> lk(controlMtx);
+                    poseControlActive = false;
+                }
+
+                //uloha4
+                // ak ideme podľa naplánovanej cesty, po dosiahnutí zlomového bodu
+                // nastavíme ďalší zlomový bod ako nový cieľ
+                if(followingPlannedPath)
+                    goNextWaypoint = true;
+
+                if(goNextWaypoint)
+                    startNextPlannedWaypoint();
             }
             else
             {
