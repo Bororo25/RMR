@@ -79,7 +79,8 @@ private:
     double maxAccelForw = 250.0; // [mm/s^2]
     double maxAccelRot  = 2.5;   // [rad/s^2]
 
-    std::chrono::steady_clock::time_point lastRampTs;
+    std::uint32_t lastRobotTimestampUs = 0;
+    bool rampTimestampInitialized = false;
 
     // --- POLOHOVANIE ---
     std::mutex controlMtx;
@@ -87,23 +88,23 @@ private:
     double goalX_cm = 0.0;
     double goalY_cm = 0.0;
 
-    // --- VYHÝBANIE SA PREKÁŽKAM (VFH) ---
+    // --- VYHÝBANIE SA PREKÁŽKAM (VFH+) ---
     std::mutex lidarMtx;
     std::vector<LaserData> latestLidar;
 
     bool avoidanceEnabled = true;
 
-    int vfhSectorCount = 72;
+    int vfhSectorCount = 90;
     double vfhMinAngleDeg = -180.0;
     double vfhMaxAngleDeg = 180.0;
 
     double histogramRangeCm = 180.0;
     double robotRadiusCm    = 15.0;
-    double safetyMarginCm   = 10.0;
+    double safetyMarginCm   = 8.0;
     double frontStopCm      = 30.0;
 
-    double wideGapDeg    = 24.0;
-    double edgeOffsetDeg = 0.0;
+    double wideGapDeg       = 30.0;
+    double edgeOffsetDeg    = 0.0;
 
     double histLow  = 110.0;
     double histHigh = 140.0;
@@ -113,6 +114,9 @@ private:
     double obstacleSlowBandCm = 80.0;
 
     double prevChosenDirRad = 0.0;
+
+    double minTurnRadiusCm = 50.0;
+    double maskMarginCm    = 5.0;
 
     // --- MAPOVANIE / SYNCHRONIZÁCIA ---
     struct TimedPose
@@ -133,8 +137,8 @@ private:
     double mapResolutionCm = 8.0;
     int mapWidthCells  = 280;
     int mapHeightCells = 280;
-    int mapOriginCellX = mapWidthCells / 2;
-    int mapOriginCellY = mapHeightCells / 2;
+    int mapOriginCellX = 140;
+    int mapOriginCellY = 140;
 
     std::vector<std::vector<int8_t>> occupancyGrid;
     std::vector<std::vector<uint16_t>> hitGrid;
@@ -171,13 +175,15 @@ private:
                                      double &frontMinCm,
                                      bool &haveCandidate);
 
-    double kpDist = 7.0;
-    double kpAng  = 1.8;
+    bool canGoDirectlyToGoal(double goalDirRad, double goalDistCm);
 
-    double vMax = 350.0;       // [mm/s]
-    double wMax = (kPi / 2.0); // [rad/s]
+    double kpDist = 6.0;
+    double kpAng  = 1.6;
 
-    double posDeadbandCm = 8.0;
+    double vMax = 350.0;         // [mm/s]
+    double wMax = (kPi / 2.0);   // [rad/s]
+
+    double posDeadbandCm = 5.0;
     double rotateOnlyRad = (45.0 * kPi / 180.0);
 
     static inline double clamp(double v, double lo, double hi)

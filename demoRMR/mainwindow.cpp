@@ -9,6 +9,10 @@
 #include <cmath>
 #include <vector>
 #include <cstdint>
+#include <QPushButton>
+#include <QFileDialog>
+#include <QImage>
+#include <QColor>
 
 /// Boris Supak
 /// Martin Brandobur
@@ -75,7 +79,7 @@ MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow)
 {
-    ipaddress = "192.168.1.14"; //127.0.0.1, 192.168.1.14
+    ipaddress = "192.168.1.14"; //127.0.0.1, 192.168.1.14 //s
 
     ui->setupUi(this);
 
@@ -83,6 +87,13 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->widget->setMouseTracking(true);
 
     datacounter = 0;
+
+    QPushButton *saveMapBtn = new QPushButton("Uložiť mapu", this);
+    saveMapBtn->setGeometry(20, 20, 140, 35);
+    saveMapBtn->show();
+
+    connect(saveMapBtn, &QPushButton::clicked,
+            this, &MainWindow::saveMapToImage);
 
 #ifndef DISABLE_OPENCV
     actIndex = -1;
@@ -137,6 +148,7 @@ void MainWindow::paintEvent(QPaintEvent *event)
                               frame[actIndex].step,
                               QImage::Format_RGB888);
         painter.drawImage(rect, image.rgbSwapped());
+        img.save("C:\Users\marti\Desktop\RMR\mapa.png");
     }
     else
 #endif
@@ -258,6 +270,55 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         return true;
     }
     return QMainWindow::eventFilter(obj, event);
+}
+
+void MainWindow::saveMapToImage()
+{
+    auto grid = _robot.getOccupancyGrid();
+
+    const int h = static_cast<int>(grid.size());
+    if(h == 0) return;
+
+    const int w = static_cast<int>(grid[0].size());
+    if(w == 0) return;
+
+    QImage img(w, h, QImage::Format_RGB888);
+
+    for(int y = 0; y < h; ++y)
+    {
+        for(int x = 0; x < w; ++x)
+        {
+            const int8_t val = grid[y][x];
+
+            if(val == 100)
+            {
+                img.setPixelColor(x, y, QColor(255, 255, 255)); // prekážka
+            }
+            else if(val == 0)
+            {
+                img.setPixelColor(x, y, QColor(0, 0, 0)); // voľný priestor
+            }
+            else
+            {
+                img.setPixelColor(x, y, QColor(80, 80, 80)); // neznáme
+            }
+        }
+    }
+
+    // zväčšenie, aby obrázok nebol malý
+    QImage scaled = img.scaled(w * 3, h * 3);
+
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Uložiť mapu",
+        "mapa.png",
+        "PNG Images (*.png);;JPEG Images (*.jpg)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    scaled.save(fileName);
 }
 
 void MainWindow::on_pushButton_9_clicked()
