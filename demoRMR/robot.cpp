@@ -93,17 +93,19 @@ void robot::markCellOccupied(int mx, int my)
     if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
         return;
 
-    hitGrid[my][mx] = std::min<uint16_t>(hitGrid[my][mx] + 1, 1000);
+    hitGrid[my][mx] = std::min<uint16_t>(
+        static_cast<uint16_t>(hitGrid[my][mx] + 1),
+        static_cast<uint16_t>(1000));
 
-    int neededHits = 3;
+    int neededHits = 4;
 
-    if(std::fabs(currentOmegaRad) > 0.6)
-        neededHits = 5;
+    if(std::fabs(currentOmegaRad) > 0.4)
+        neededHits = 7;
 
-    if(std::fabs(currentOmegaRad) > 1.0)
-        neededHits = 10000;
+    if(std::fabs(currentOmegaRad) > 0.8)
+        return;
 
-    if(hitGrid[my][mx] >= neededHits && hitGrid[my][mx] > freeGrid[my][mx] + 1)
+    if(hitGrid[my][mx] >= neededHits && hitGrid[my][mx] > freeGrid[my][mx] + 2)
         occupancyGrid[my][mx] = 100;
 }
 

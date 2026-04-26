@@ -43,6 +43,11 @@ protected:
         Q_UNUSED(event);
 
         QPainter painter(this);
+
+        //antialiasing
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
         painter.fillRect(rect(), Qt::black);
 
         if(grid.empty() || grid[0].empty())
