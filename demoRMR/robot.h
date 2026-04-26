@@ -9,6 +9,10 @@
 #include <chrono>
 #include <limits>
 
+//uolha3
+#include <vector>
+#include <deque>
+
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -41,6 +45,9 @@ public:
   //funkcie na polohovanie
   void startPoseControl(double goalX_cm, double goalY_cm);
   void stopPoseControl();
+
+  //uloha3
+  std::vector<std::vector<int8_t>> getOccupancyGrid();
 
 signals:
   void publishPosition(double x, double y, double z);
@@ -112,6 +119,46 @@ private:
   double obstacleSlowBandCm = 200.0;     // pri blízkej prekážke spomaľuj 80.0 50.0
 
   double prevChosenDirRad = 0.0;        // kvôli hladšiemu výberu kandidáta
+
+  //uloha3
+  // --- MAPOVANIE / SYNCHRONIZÁCIA ---
+  std::mutex poseMtx;
+
+  struct TimedPose
+  {
+      std::uint32_t ts_us;
+      double x_cm;
+      double y_cm;
+      double fi_rad;
+  };
+
+  std::mutex poseHistoryMtx;
+  std::deque<TimedPose> poseHistory;
+
+  double currentOmegaRad = 0.0;
+
+  std::mutex mapMtx;
+
+  double mapResolutionCm = 8.0;
+  int mapWidthCells  = 280;
+  int mapHeightCells = 280;
+  int mapOriginCellX = mapWidthCells / 2;
+  int mapOriginCellY = mapHeightCells / 2;
+
+  std::vector<std::vector<int8_t>> occupancyGrid;
+  std::vector<std::vector<uint16_t>> hitGrid;
+  std::vector<std::vector<uint16_t>> freeGrid;
+
+  bool interpolatePose(std::uint32_t ts_us, double &ix, double &iy, double &ifi);
+  static double interpAngle(double a0, double a1, double t);
+
+  void initOccupancyGrid();
+  bool worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const;
+  void markCellFree(int mx, int my);
+  void markCellOccupied(int mx, int my);
+  void raytraceFreeCells(int x0, int y0, int x1, int y1);
+  void updateMapFromLidar(const std::vector<LaserData> &laserData);
+
 
   static inline double deg2rad(double d)
   {

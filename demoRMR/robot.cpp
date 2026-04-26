@@ -11,6 +11,168 @@ qRegisterMetaType<skeleton>("skeleton");
 #endif
 }
 
+//uloha3
+double robot::interpAngle(double a0, double a1, double t)
+{
+    double d = normalizeAngleRad(a1 - a0);
+    return normalizeAngleRad(a0 + t * d);
+}
+
+bool robot::interpolatePose(std::uint32_t ts_us, double &ix, double &iy, double &ifi)
+{
+    std::lock_guard<std::mutex> lk(poseHistoryMtx);
+
+    if(poseHistory.size() < 2)
+        return false;
+
+    if(ts_us <= poseHistory.front().ts_us)
+        return false;
+
+    if(ts_us >= poseHistory.back().ts_us)
+        return false;
+
+    for(size_t i = 1; i < poseHistory.size(); ++i)
+    {
+        const auto &p0 = poseHistory[i - 1];
+        const auto &p1 = poseHistory[i];
+
+        if(ts_us >= p0.ts_us && ts_us <= p1.ts_us)
+        {
+            const double dt = static_cast<double>(p1.ts_us - p0.ts_us);
+            if(dt <= 0.0)
+                return false;
+
+            const double alpha = static_cast<double>(ts_us - p0.ts_us) / dt;
+
+            ix  = p0.x_cm + alpha * (p1.x_cm - p0.x_cm);
+            iy  = p0.y_cm + alpha * (p1.y_cm - p0.y_cm);
+            ifi = interpAngle(p0.fi_rad, p1.fi_rad, alpha);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void robot::initOccupancyGrid()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    occupancyGrid.assign(mapHeightCells, std::vector<int8_t>(mapWidthCells, -1));
+    hitGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+    freeGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+}
+
+std::vector<std::vector<int8_t>> robot::getOccupancyGrid()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+    return occupancyGrid;
+}
+
+bool robot::worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const
+{
+    mx = static_cast<int>(std::round(wx_cm / mapResolutionCm)) + mapOriginCellX;
+    my = mapOriginCellY - static_cast<int>(std::round(wy_cm / mapResolutionCm));
+
+    return !(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells);
+}
+
+void robot::markCellFree(int mx, int my)
+{
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return;
+
+    freeGrid[my][mx] = std::min<uint16_t>(freeGrid[my][mx] + 1, 1000);
+
+    if(freeGrid[my][mx] > hitGrid[my][mx] + 2)
+        occupancyGrid[my][mx] = 0;
+}
+
+void robot::markCellOccupied(int mx, int my)
+{
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return;
+
+    hitGrid[my][mx] = std::min<uint16_t>(hitGrid[my][mx] + 1, 1000);
+
+    int neededHits = 3;
+
+    if(std::fabs(currentOmegaRad) > 0.6)
+        neededHits = 5;
+
+    if(std::fabs(currentOmegaRad) > 1.0)
+        neededHits = 10000;
+
+    if(hitGrid[my][mx] >= neededHits && hitGrid[my][mx] > freeGrid[my][mx] + 1)
+        occupancyGrid[my][mx] = 100;
+}
+
+void robot::raytraceFreeCells(int x0, int y0, int x1, int y1)
+{
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    int x = x0;
+    int y = y0;
+
+    while(true)
+    {
+        if(x == x1 && y == y1)
+            break;
+
+        markCellFree(x, y);
+
+        int e2 = 2 * err;
+        if(e2 > -dy)
+        {
+            err -= dy;
+            x += sx;
+        }
+        if(e2 < dx)
+        {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+void robot::updateMapFromLidar(const std::vector<LaserData> &laserData)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    for(const auto &ld : laserData)
+    {
+        const double distCm = static_cast<double>(ld.scanDistance) / 10.0;
+
+        if(distCm < 10.0 || distCm > 250.0)
+            continue;
+
+        double rx, ry, rfi;
+        if(!interpolatePose(ld.timestamp, rx, ry, rfi))
+            continue;
+
+        int robotMx, robotMy;
+        if(!worldToMap(rx, ry, robotMx, robotMy))
+            continue;
+
+        const double localAngleRad = deg2rad(-static_cast<double>(ld.scanAngle));
+        const double beamAngle = rfi + localAngleRad;
+
+        const double hitX = rx + distCm * std::cos(beamAngle);
+        const double hitY = ry + distCm * std::sin(beamAngle);
+
+        int hitMx, hitMy;
+        if(!worldToMap(hitX, hitY, hitMx, hitMy))
+            continue;
+
+        raytraceFreeCells(robotMx, robotMy, hitMx, hitMy);
+        markCellOccupied(hitMx, hitMy);
+    }
+}
+
 void robot::initAndStartRobot(std::string ipaddress)
 {
 
@@ -36,6 +198,15 @@ void robot::initAndStartRobot(std::string ipaddress)
         std::lock_guard<std::mutex> lk(lidarMtx);
         latestLidar.clear();
     }
+
+    //uloha3
+    currentOmegaRad = 0.0;
+    initOccupancyGrid();
+    {
+        std::lock_guard<std::mutex> lk(poseHistoryMtx);
+        poseHistory.clear();
+    }
+
 
     lastRobotTimestampUs = 0;
     rampTimestampInitialized = false;
@@ -412,7 +583,38 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 /// vola sa vzdy ked dojdu nove data z robota. nemusite nic riesit, proste sa to stane
 int robot::processThisRobot(const TKobukiData &robotdata)
 {
+    //uloha3
+    {
+        static std::uint32_t prevTsOmega = 0;
+        static double prevFiOmega = 0.0;
 
+        double px = x;
+        double py = y;
+        double pfi = fi;
+
+        if(prevTsOmega != 0 && robotdata.synctimestamp > prevTsOmega)
+        {
+            const double dt = static_cast<double>(robotdata.synctimestamp - prevTsOmega) / 1e6;
+            if(dt > 0.0)
+                currentOmegaRad = normalizeAngleRad(pfi - prevFiOmega) / dt;
+        }
+
+        prevTsOmega = robotdata.synctimestamp;
+        prevFiOmega = pfi;
+
+        std::lock_guard<std::mutex> lk(poseHistoryMtx);
+
+        TimedPose tp;
+        tp.ts_us  = robotdata.synctimestamp;
+        tp.x_cm   = px;
+        tp.y_cm   = py;
+        tp.fi_rad = pfi;
+
+        poseHistory.push_back(tp);
+
+        while(poseHistory.size() > 4000)
+            poseHistory.pop_front();
+    }
 
     ///tu mozete robit s datami z robota
     //ODOMETRIA
@@ -696,6 +898,9 @@ int robot::processThisLidar(const std::vector<LaserData>& laserData)
         std::lock_guard<std::mutex> lk(lidarMtx);
         latestLidar = laserData;
     }
+
+    //uloha3
+    updateMapFromLidar(laserData);
 
     copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);

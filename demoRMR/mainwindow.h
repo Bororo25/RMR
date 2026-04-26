@@ -61,6 +61,9 @@ private slots:
 
   void on_pushButton_clicked();
 
+  //uloha3
+  void saveMapToImage();
+
   int paintThisLidar(const std::vector<LaserData> &laserData);
 #ifndef DISABLE_OPENCV
   int paintThisCamera(const cv::Mat &cameraData);

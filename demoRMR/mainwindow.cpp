@@ -5,9 +5,76 @@
 //kniznice na branie eventov
 #include <QMouseEvent>
 #include <QEvent>
+
+//uloha3
+#include <QWidget>
+#include <QFileDialog>
+#include <QImage>
+#include <QColor>
+#include <QPushButton>
+#include <vector>
+#include <cstdint>
+
 ///Boris Supak
 ///Martin Brandobur
 
+//uloha3
+namespace
+{
+class MapWindow : public QWidget
+{
+public:
+    MapWindow(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setWindowTitle("Occupancy Grid Map");
+        resize(700, 700);
+        setMinimumSize(500, 500);
+    }
+
+    void updateMap(const std::vector<std::vector<int8_t>> &newGrid)
+    {
+        grid = newGrid;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        Q_UNUSED(event);
+
+        QPainter painter(this);
+        painter.fillRect(rect(), Qt::black);
+
+        if(grid.empty() || grid[0].empty())
+            return;
+
+        const int gridH = static_cast<int>(grid.size());
+        const int gridW = static_cast<int>(grid[0].size());
+
+        const double cellW = static_cast<double>(width()) / gridW;
+        const double cellH = static_cast<double>(height()) / gridH;
+
+        painter.setPen(Qt::NoPen);
+
+        for(int my = 0; my < gridH; ++my)
+        {
+            for(int mx = 0; mx < gridW; ++mx)
+            {
+                if(grid[my][mx] == 100)
+                {
+                    QRectF r(mx * cellW, my * cellH, cellW, cellH);
+                    painter.fillRect(r, Qt::white);
+                }
+            }
+        }
+    }
+
+private:
+    std::vector<std::vector<int8_t>> grid;
+};
+}
+
+static MapWindow *g_mapWindow = nullptr;
 
 
 MainWindow::MainWindow(QWidget *parent) :
@@ -25,6 +92,16 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->widget->setMouseTracking(true);
 
     datacounter=0;
+
+    //uloha3
+    QPushButton *saveMapBtn = new QPushButton("Uložiť mapu", this);
+    saveMapBtn->setGeometry(20, 20, 140, 35);
+    saveMapBtn->show();
+
+    connect(saveMapBtn, &QPushButton::clicked,
+            this, &MainWindow::saveMapToImage);
+
+
 #ifndef DISABLE_OPENCV
     actIndex=-1;
     useCamera1=false;
@@ -39,6 +116,14 @@ MainWindow::MainWindow(QWidget *parent) :
 
 MainWindow::~MainWindow()
 {
+    //uloha3
+    if(g_mapWindow)
+    {
+        g_mapWindow->close();
+        delete g_mapWindow;
+        g_mapWindow = nullptr;
+    }
+
     delete ui;
 }
 
@@ -145,6 +230,10 @@ void  MainWindow::setUiValues(double robotX,double robotY,double robotFi)
     ui->lineEdit_2->setText(QString::number(robotX, 'f', 2));
     ui->lineEdit_3->setText(QString::number(robotY, 'f', 2));
     ui->lineEdit_4->setText(QString::number(robotFi, 'f', 2));
+
+    //uloha3
+    if(g_mapWindow)
+        g_mapWindow->updateMap(_robot.getOccupancyGrid());
 }
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
@@ -179,6 +268,47 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     return QMainWindow::eventFilter(obj, event);
 }
 
+//uloha3
+void MainWindow::saveMapToImage()
+{
+    auto grid = _robot.getOccupancyGrid();
+
+    const int h = static_cast<int>(grid.size());
+    if(h == 0) return;
+
+    const int w = static_cast<int>(grid[0].size());
+    if(w == 0) return;
+
+    QImage img(w, h, QImage::Format_RGB888);
+
+    for(int y = 0; y < h; ++y)
+    {
+        for(int x = 0; x < w; ++x)
+        {
+            const int8_t val = grid[y][x];
+
+            if(val == 100)
+                img.setPixelColor(x, y, QColor(255, 255, 255));
+            else
+                img.setPixelColor(x, y, QColor(0, 0, 0));
+        }
+    }
+
+    QImage scaled = img.scaled(w * 3, h * 3);
+
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Uložiť mapu",
+        "mapa.png",
+        "PNG Images (*.png);;JPEG Images (*.jpg)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    scaled.save(fileName);
+}
+
 void MainWindow::on_pushButton_9_clicked() //start button
 {
     //ziskanie joystickov
@@ -198,6 +328,13 @@ void MainWindow::on_pushButton_9_clicked() //start button
 #endif
 
     _robot.initAndStartRobot(ipaddress);
+
+    //uloha3
+    if(!g_mapWindow)
+    {
+        g_mapWindow = new MapWindow();
+        g_mapWindow->show();
+    }
 
     #ifndef DISABLE_JOYSTICK
         instance = QJoysticks::getInstance();
@@ -276,6 +413,10 @@ int MainWindow::paintThisLidar(const std::vector<LaserData> &laserData)
     copyOfLaserData=laserData;
     //memcpy( &copyOfLaserData,&laserData,sizeof(LaserMeasurement));
     updateLaserPicture=1;
+
+    //uloha3
+    if(g_mapWindow)
+        g_mapWindow->updateMap(_robot.getOccupancyGrid());
 
     update();
     return 0;
