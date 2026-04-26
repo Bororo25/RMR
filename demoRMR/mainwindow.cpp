@@ -2,6 +2,7 @@
 #include "ui_mainwindow.h"
 #include <QPainter>
 #include <math.h>
+//kniznice na branie eventov
 #include <QMouseEvent>
 #include <QEvent>
 ///Boris Supak
@@ -15,11 +16,14 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
-    ipaddress="127.0.0.1";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
+    ipaddress= "127.0.0.1";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
 
     ui->setupUi(this);
+
+    //pridanie na event z mysky
     ui->widget->installEventFilter(this);
     ui->widget->setMouseTracking(true);
+
     datacounter=0;
 #ifndef DISABLE_OPENCV
     actIndex=-1;
@@ -41,34 +45,32 @@ MainWindow::~MainWindow()
 void MainWindow::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
-    ///prekreslujem obrazovku len vtedy, ked viem ze mam nove data. paintevent sa
-    /// moze pochopitelne zavolat aj z inych dovodov, napriklad zmena velkosti okna
-    painter.setBrush(Qt::black);//cierna farba pozadia(pouziva sa ako fill pre napriklad funkciu drawRect)
+    painter.setBrush(Qt::black);
     QPen pero;
-    pero.setStyle(Qt::SolidLine);//styl pera - plna ciara
-    pero.setWidth(3);//hrubka pera -3pixely
-    pero.setColor(Qt::green);//farba je zelena
+    pero.setStyle(Qt::SolidLine);
+    pero.setWidth(3);
+    pero.setColor(Qt::green);
     QRect rect;
-    rect= ui->widget->geometry();//ziskate porametre stvorca,do ktoreho chcete kreslit
+    rect= ui->widget->geometry();
     rect.translate(0,15);
     painter.drawRect(rect);
     if(goalMarkerValid)
     {
-        // prepočítaj globálny cieľ do robot frame a potom do pixelov
-        const double dx = goalXcm - curXcm;   // [cm]
-        const double dy = goalYcm - curYcm;   // [cm]
+        const double dx = goalXcm - curXcm;
+        const double dy = goalYcm - curYcm;
         const double c = std::cos(curFiRad);
         const double s = std::sin(curFiRad);
 
-        // world -> robot frame (kompatibilné s tým, ako si to počítal pri kliku)
+        //transformacia w -> r
         const double fwd_cm   = dx * c + dy * s;
         const double right_cm = dx * s - dy * c;
 
-        const double pxPerCm = 1.0; // sedí s tvojím lidar kreslením (scanDistance/10 ~= cm)
+        const double pxPerCm = 1.0;
 
         const double centerX = rect.width()  / 2.0 + rect.topLeft().x();
         const double centerY = rect.height() / 2.0 + rect.topLeft().y();
 
+        //prevod z robotovych suradnic do obrazu
         const int gx = static_cast<int>(centerX + right_cm * pxPerCm);
         const int gy = static_cast<int>(centerY - fwd_cm   * pxPerCm);
 
@@ -80,6 +82,9 @@ void MainWindow::paintEvent(QPaintEvent *event)
         if(rect.contains(gx, gy))
             painter.drawEllipse(QPoint(gx, gy), 6, 6);
     }
+
+
+
 #ifndef DISABLE_OPENCV
     if(useCamera1==true && actIndex>-1)/// ak zobrazujem data z kamery a aspon niektory frame vo vectore je naplneny
     {
@@ -131,11 +136,11 @@ void MainWindow::paintEvent(QPaintEvent *event)
 
 /// toto je slot. niekde v kode existuje signal, ktory je prepojeny. pouziva sa napriklad (v tomto pripade) ak chcete dostat data z jedneho vlakna (robot) do ineho (ui)
 /// prepojenie signal slot je vo funkcii  on_pushButton_9_clicked
-void MainWindow::setUiValues(double robotX,double robotY,double robotFi)
+void  MainWindow::setUiValues(double robotX,double robotY,double robotFi)
 {
     curXcm = robotX;
     curYcm = robotY;
-    curFiRad = robotFi * M_PI / 180.0;
+    curFiRad = robotFi * M_PI / 180.0; // robotFi prichádza v stupňoch
 
     ui->lineEdit_2->setText(QString::number(robotX, 'f', 2));
     ui->lineEdit_3->setText(QString::number(robotY, 'f', 2));
@@ -149,10 +154,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         QMouseEvent *me = static_cast<QMouseEvent*>(event);
         const QPoint p = me->pos(); // súradnice v rámci ui->widget
 
-        // Pozor: v paintEvent posúvaš kreslenie o +15px (rect.translate(0,15))
+        // reakcia na rect.translate(0,15))
         const int yDrawOffset = 15;
 
-        // 1px ~ 1cm (tak ako máš škálovanie v lidar kreslení)
         const double pxPerCm = 1.0;
 
         const double centerX = ui->widget->width()  / 2.0;
@@ -161,16 +165,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         const double right_cm = (p.x() - centerX) / pxPerCm;   // doprava +
         const double fwd_cm   = (centerY - p.y()) / pxPerCm;   // dopredu (hore) +
 
-        // prepočet relatívneho cieľa (robot frame) do globálu pomocou fi
         const double goalX = curXcm + fwd_cm * std::cos(curFiRad) + right_cm * std::sin(curFiRad);
         const double goalY = curYcm + fwd_cm * std::sin(curFiRad) - right_cm * std::cos(curFiRad);
-
-        // uložíme marker v globále (aby sa pri otáčaní "neposúval")
+        //ulozenie do globalnej premennej
         goalMarkerValid = true;
         goalXcm = goalX;
         goalYcm = goalY;
         update();
-
+        //zapnutie regulacie polohy
         _robot.startPoseControl(goalX, goalY);
         return true;
     }

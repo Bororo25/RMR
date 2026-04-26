@@ -7,6 +7,7 @@
 #include <cmath>
 #include <mutex>
 #include <chrono>
+#include <limits>
 
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
@@ -66,25 +67,82 @@ private:
   double curForwCmd = 0.0; // [mm/s]
   double curRotCmd  = 0.0; // [rad/s]
 
-  // max. akcelerácie (rozbeh)
+  // akcelerácie
   double maxAccelForw = 250; // [mm/s^2]
   double maxAccelRot  = 2.5;   // [rad/s^2]
 
+
+  double minTurnRadiusCm = 50.0;     // minimálny polomer oblúka robota 15
+  double maskMarginCm    = 5.0;      // malá rezerva navyše
+
   // čas poslednej rampy
-  std::chrono::steady_clock::time_point lastRampTs;
+  std::uint32_t lastRobotTimestampUs = 0;
+  bool rampTimestampInitialized = false;
   // --- POLOHOVANIE (združený regulátor) ---
   std::mutex controlMtx;
   bool poseControlActive = false;
   double goalX_cm = 0.0;
   double goalY_cm = 0.0;
 
-  double kpDist = 7;
-  double kpAng  = 3;
+  std::mutex lidarMtx;
+  std::vector<LaserData> latestLidar;
 
-  double vMax = 400;                    // [mm/s]
+  bool avoidanceEnabled = true;
+
+  int vfhSectorCount = 90;              // 90 sektorov => 2° na sektor
+  double vfhMinAngleDeg = -180.0;
+  double vfhMaxAngleDeg =  180.0;
+
+  double histogramRangeCm = 180.0;
+  double robotRadiusCm    = 15.0;
+  double safetyMarginCm   = 10;
+  double frontStopCm      = 24.0; //30.0 20.0
+
+  double wideGapDeg       = 20.0;       // od tejto šírky ber medzeru ako "širokú" 30 20
+  double edgeOffsetDeg    = 5.00;       // kandidát vo vnútri kraja priechodu
+
+  double histLow  = 12;   // dolný prah hysterézie //120
+  double histHigh = 18;   // horný prah hysterézie  //140
+
+  double prevFiRad = 0.0;
+  bool prevFiInitialized = false;
+
+  std::vector<bool> prevBlocked;
+  bool prevBlockedInitialized = false;     // prah blokovaného sektora
+  double obstacleSlowBandCm = 200.0;     // pri blízkej prekážke spomaľuj 80.0 50.0
+
+  double prevChosenDirRad = 0.0;        // kvôli hladšiemu výberu kandidáta
+
+  static inline double deg2rad(double d)
+  {
+      return d * (kPi / 180.0);
+  }
+
+  static inline double rad2deg(double r)
+  {
+      return r * (180.0 / kPi);
+  }
+
+  static inline double normalizeAngleDeg(double a)
+  {
+      while (a > 180.0) a -= 360.0;
+      while (a < -180.0) a += 360.0;
+      return a;
+  }
+
+  double computeAvoidanceDirection(double goalDirRad,
+                                   double &frontMinCm,
+                                   bool &haveCandidate);
+  bool canGoDirectlyToGoal(double goalDirRad, double goalDistCm);
+
+
+  double kpDist = 6;
+  double kpAng  = 1.3; //1.6
+
+  double vMax = 320.0;
+  double posDeadbandCm = 5.0;                  // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
-  double posDeadbandCm = 5.0;
   double rotateOnlyRad = (45.0 * kPi/180.0);
 
   static inline double clamp(double v, double lo, double hi)
@@ -106,6 +164,7 @@ private:
       return a;
   }
 
+//pohyb dopredu o maxstep
   static inline double stepTowards(double cur, double target, double maxStep)
   {
       const double diff = target - cur;
