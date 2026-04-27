@@ -152,7 +152,6 @@ bool robot::extractWavePath(const std::vector<std::vector<int>> &wave,
 
     GridPoint prevDir{0, 0};
 
-    // poistka proti nekonečnej slučke
     const int maxSteps = mapWidthCells * mapHeightCells;
 
     for(int step = 0; step < maxSteps; ++step)
@@ -163,6 +162,8 @@ bool robot::extractWavePath(const std::vector<std::vector<int>> &wave,
         const int curVal = wave[cur.y][cur.x];
 
         // 4-susednosť - žiadne diagonály
+        // Poradie tu slúži iba ako záloha, keď sa nedá pokračovať posledným smerom.
+        // Toto poradie preferuje os x.
         const GridPoint dirs4[4] =
             {
                 { 1,  0},
@@ -174,7 +175,7 @@ bool robot::extractWavePath(const std::vector<std::vector<int>> &wave,
         GridPoint best = cur;
         int bestValue = curVal;
 
-        // 1. najprv skús pokračovať predchádzajúcim smerom
+        // 1. Najprv skús pokračovať predchádzajúcim smerom.
         if(prevDir.x != 0 || prevDir.y != 0)
         {
             const int nx = cur.x + prevDir.x;
@@ -190,7 +191,7 @@ bool robot::extractWavePath(const std::vector<std::vector<int>> &wave,
             }
         }
 
-        // 2. ak predchádzajúci smer nejde, vyber najlepšiu susednú bunku
+        // 2. Ak posledný smer nevedie bližšie k cieľu, vyber nový smer.
         if(best.x == cur.x && best.y == cur.y)
         {
             for(const auto &d : dirs4)
@@ -392,6 +393,17 @@ void robot::startNextPlannedWaypoint()
     goalY_cm = plannedPathCm[plannedPathIndex].y_cm;
     poseControlActive = true;
     useDirectCommands = 0;
+
+    //uloha4
+    curForwCmd = 0.0;
+    curRotCmd  = 0.0;
+    prevChosenDirRad = 0.0;
+
+    prevBlocked.assign(vfhSectorCount, false);
+    prevBlockedInitialized = true;
+
+    prevFiRad = fi;
+    prevFiInitialized = true;
 }
 
 bool robot::worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const
@@ -1071,7 +1083,17 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
                 double alphaAvoid = alphaGoal;
 
-
+                //uloha4
+                // Pri sledovani naplanovanej cesty chceme ist po usekoch,
+                // nie po obluku. Preto ak je robot velmi otoceny mimo smeru
+                // dalsieho bodu, najprv sa iba natoci na mieste.
+                if(followingPlannedPath && std::fabs(alphaGoal) > deg2rad(12.0))
+                {
+                    desForw = 0.0;
+                    desRot  = clamp(kpAng * alphaGoal, -wMax * 0.65, wMax * 0.65);
+                }
+                else
+                {
 
                 const double directGoalThresholdCm = 35.0;
                 const bool directToGoal =
@@ -1117,6 +1139,8 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
                 if(frontMinCm < frontStopCm)
                     desForw = 0.0;
+
+                }// koniec else pre uloha4 - najprv natocenie, potom pohyb
 
                 /*
                 if(rho < 22.0)
