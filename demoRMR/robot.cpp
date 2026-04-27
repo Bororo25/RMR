@@ -99,13 +99,13 @@ void robot::markCellOccupied(int mx, int my)
 
     int neededHits = 4;
 
-    if(std::fabs(currentOmegaRad) > 0.4)
-        neededHits = 7;
+    if(std::fabs(currentOmegaRad) > 0.2)
+        neededHits = 8;
 
-    if(std::fabs(currentOmegaRad) > 0.8)
+    if(std::fabs(currentOmegaRad) > 0.4)
         return;
 
-    if(hitGrid[my][mx] >= neededHits && hitGrid[my][mx] > freeGrid[my][mx] + 2)
+    if(hitGrid[my][mx] >= neededHits && hitGrid[my][mx] > freeGrid[my][mx] + 4)
         occupancyGrid[my][mx] = 100;
 }
 
@@ -149,7 +149,7 @@ void robot::updateMapFromLidar(const std::vector<LaserData> &laserData)
     {
         const double distCm = static_cast<double>(ld.scanDistance) / 10.0;
 
-        if(distCm < 10.0 || distCm > 250.0)
+        if(distCm < 20.0 || distCm > 200.0)
             continue;
 
         double rx, ry, rfi;

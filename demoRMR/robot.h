@@ -139,7 +139,7 @@ private:
 
   std::mutex mapMtx;
 
-  double mapResolutionCm = 8.0;
+  double mapResolutionCm = 10.0;
   int mapWidthCells  = 280;
   int mapHeightCells = 280;
   int mapOriginCellX = mapWidthCells / 2;
@@ -186,7 +186,7 @@ private:
   double kpDist = 6;
   double kpAng  = 1.3; //1.6
 
-  double vMax = 320.0;
+  double vMax = 250.0;
   double posDeadbandCm = 5.0;                  // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
