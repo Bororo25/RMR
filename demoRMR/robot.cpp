@@ -902,7 +902,7 @@ int robot::processThisLidar(const std::vector<LaserData>& laserData)
     }
 
     //uloha3
-    updateMapFromLidar(laserData);
+    updateMapFromLidar(copyOfLaserData);
 
     copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);
