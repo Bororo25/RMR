@@ -16,6 +16,7 @@
 //uloha4
 #include <queue>
 
+
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -108,7 +109,7 @@ private:
 
   double histogramRangeCm = 180.0;
   double robotRadiusCm    = 15.0;
-  double safetyMarginCm   = 10;
+  double safetyMarginCm   = 15;
   double frontStopCm      = 24.0; //30.0 20.0
 
   double wideGapDeg       = 20.0;       // od tejto šírky ber medzeru ako "širokú" 30 20
@@ -225,7 +226,7 @@ private:
   double kpAng  = 1.3; //1.6
 
   double vMax = 320.0;
-  double posDeadbandCm = 5.0;                  // [mm/s]
+  double posDeadbandCm = 7.0;                  // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
   double rotateOnlyRad = (45.0 * kPi/180.0);

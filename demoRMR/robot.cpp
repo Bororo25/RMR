@@ -933,39 +933,6 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 /// vola sa vzdy ked dojdu nove data z robota. nemusite nic riesit, proste sa to stane
 int robot::processThisRobot(const TKobukiData &robotdata)
 {
-    //uloha3
-    {
-        static std::uint32_t prevTsOmega = 0;
-        static double prevFiOmega = 0.0;
-
-        double px = x;
-        double py = y;
-        double pfi = fi;
-
-        if(prevTsOmega != 0 && robotdata.synctimestamp > prevTsOmega)
-        {
-            const double dt = static_cast<double>(robotdata.synctimestamp - prevTsOmega) / 1e6;
-            if(dt > 0.0)
-                currentOmegaRad = normalizeAngleRad(pfi - prevFiOmega) / dt;
-        }
-
-        prevTsOmega = robotdata.synctimestamp;
-        prevFiOmega = pfi;
-
-        std::lock_guard<std::mutex> lk(poseHistoryMtx);
-
-        TimedPose tp;
-        tp.ts_us  = robotdata.synctimestamp;
-        tp.x_cm   = px;
-        tp.y_cm   = py;
-        tp.fi_rad = pfi;
-
-        poseHistory.push_back(tp);
-
-        while(poseHistory.size() > 4000)
-            poseHistory.pop_front();
-    }
-
     ///tu mozete robit s datami z robota
     //ODOMETRIA
     const double gyroRadAbs = gyroRawToRad(static_cast<double>(robotdata.GyroAngle));
@@ -1004,6 +971,39 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         y += l_cm * std::sin(fi);
 
         fi = newFi;
+    }
+
+    //uloha3
+    {
+        static std::uint32_t prevTsOmega = 0;
+        static double prevFiOmega = 0.0;
+
+        double px = x;
+        double py = y;
+        double pfi = fi;
+
+        if(prevTsOmega != 0 && robotdata.synctimestamp > prevTsOmega)
+        {
+            const double dt = static_cast<double>(robotdata.synctimestamp - prevTsOmega) / 1e6;
+            if(dt > 0.0)
+                currentOmegaRad = normalizeAngleRad(pfi - prevFiOmega) / dt;
+        }
+
+        prevTsOmega = robotdata.synctimestamp;
+        prevFiOmega = pfi;
+
+        std::lock_guard<std::mutex> lk(poseHistoryMtx);
+
+        TimedPose tp;
+        tp.ts_us  = robotdata.synctimestamp;
+        tp.x_cm   = px;
+        tp.y_cm   = py;
+        tp.fi_rad = pfi;
+
+        poseHistory.push_back(tp);
+
+        while(poseHistory.size() > 4000)
+            poseHistory.pop_front();
     }
 
 
@@ -1065,8 +1065,6 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 }
 
                 //uloha4
-                // ak ideme podľa naplánovanej cesty, po dosiahnutí zlomového bodu
-                // nastavíme ďalší zlomový bod ako nový cieľ
                 if(followingPlannedPath)
                     goNextWaypoint = true;
 
@@ -1084,63 +1082,66 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 double alphaAvoid = alphaGoal;
 
                 //uloha4
-                // Pri sledovani naplanovanej cesty chceme ist po usekoch,
-                // nie po obluku. Preto ak je robot velmi otoceny mimo smeru
-                // dalsieho bodu, najprv sa iba natoci na mieste.
-                if(followingPlannedPath && std::fabs(alphaGoal) > deg2rad(12.0))
+                if(followingPlannedPath && std::fabs(alphaGoal) > deg2rad(7.0))
                 {
                     desForw = 0.0;
-                    desRot  = clamp(kpAng * alphaGoal, -wMax * 0.65, wMax * 0.65);
+                    desRot  = clamp(kpAng * alphaGoal, -wMax * 0.55, wMax * 0.55);
                 }
                 else
                 {
+                    if(followingPlannedPath)
+                    {
+                        alphaAvoid = alphaGoal;
+                        frontMinCm = std::numeric_limits<double>::infinity();
+                    }
+                    else
+                    {
+                        const double directGoalThresholdCm = 35.0;
+                        const bool directToGoal =
+                            (rho < directGoalThresholdCm) && canGoDirectlyToGoal(alphaGoal, rho);
 
-                const double directGoalThresholdCm = 35.0;
-                const bool directToGoal =
-                    (rho < directGoalThresholdCm) && canGoDirectlyToGoal(alphaGoal, rho);
+                        if(rho < 15.0 || directToGoal)
+                        {
+                            alphaAvoid = alphaGoal;
+                            frontMinCm = std::numeric_limits<double>::infinity();
+                        }
+                        else if(avoidanceEnabled)
+                        {
+                            alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
+                        }
+                    }
 
-                if(rho < 15.0)
-                {
-                    alphaAvoid = alphaGoal;
-                    frontMinCm = std::numeric_limits<double>::infinity();
+                    double alphaCmd = alphaAvoid;
+
+                    if(rho < 18.0)
+                    {
+                        const double blend = clamp((30.0 - rho) / 20.0, 0.0, 1.0);
+                        alphaCmd = normalizeAngleRad((1.0 - blend) * alphaAvoid + blend * alphaGoal);
+                    }
+
+                    const double steerScale = clamp(std::cos(std::fabs(alphaCmd)), 0.0, 1.0);
+
+                    double frontScale = 1.0;
+                    if(frontMinCm < obstacleSlowBandCm)
+                    {
+                        frontScale = clamp((frontMinCm - frontStopCm) /
+                                               (obstacleSlowBandCm - frontStopCm),
+                                           0.0, 1.0);
+                    }
+
+                    const double goalScale = clamp(rho / 10.0, 0.20, 1.0);
+
+                    const double localVMax = vMax;
+
+                    desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale,
+                                    0.0,
+                                    localVMax);
+
+                    desRot  = clamp(kpAng * alphaCmd, -wMax * 0.65, wMax * 0.65);
+
+                    if(frontMinCm < frontStopCm)
+                        desForw = 0.0;
                 }
-                else if(directToGoal)
-                {
-                    alphaAvoid = alphaGoal;
-                    frontMinCm = std::numeric_limits<double>::infinity();
-                }
-                else if(avoidanceEnabled)
-                {
-                    alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
-                }
-                double alphaCmd = alphaAvoid;
-                if(rho < 18.0) //30
-                {
-                    const double blend = clamp((30.0 - rho) / 20.0, 0.0, 1.0);
-                    alphaCmd = normalizeAngleRad((1.0 - blend) * alphaAvoid + blend * alphaGoal);
-                }
-
-                /*const double angleRatio = clamp(std::fabs(alphaCmd) / rotateOnlyRad, 0.0, 1.0);
-                const double steerScale = 1.0 - angleRatio;
-                */
-                const double steerScale = clamp(std::cos(std::fabs(alphaCmd)), 0.0, 1.0);
-                double frontScale = 1.0;
-                if(frontMinCm < obstacleSlowBandCm)
-                {
-                    frontScale = clamp((frontMinCm - frontStopCm) /
-                                           (obstacleSlowBandCm - frontStopCm),
-                                       0.0, 1.0);
-                }
-
-                const double goalScale = clamp(rho / 10.0, 0.20, 1.0);
-
-                desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale, 0.0, vMax);
-                desRot  = clamp(kpAng * alphaCmd, -wMax*0.65, wMax*0.65);
-
-                if(frontMinCm < frontStopCm)
-                    desForw = 0.0;
-
-                }// koniec else pre uloha4 - najprv natocenie, potom pohyb
 
                 /*
                 if(rho < 22.0)
