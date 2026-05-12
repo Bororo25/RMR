@@ -80,7 +80,7 @@ public:
   std::vector<std::pair<double, double>> getPlannedPathCm();
 
   //uloha5
-  void initMonteCarloLocalization(int particleCount = 700);
+  void initMonteCarloLocalization(int particleCount = 2500);
   void setMonteCarloEnabled(bool enabled);
   bool isMonteCarloEnabled() const;
 

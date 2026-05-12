@@ -398,9 +398,7 @@ bool robot::extractWavePath(const std::vector<std::vector<int>> &wave,
 
         const int curVal = wave[cur.y][cur.x];
 
-        // 4-susednosť - žiadne diagonály
-        // Poradie tu slúži iba ako záloha, keď sa nedá pokračovať posledným smerom.
-        // Toto poradie preferuje os x.
+        // 4-susednosť - posledný smer potom sa preferuje x
         const GridPoint dirs4[4] =
             {
                 { 1,  0},
@@ -757,12 +755,6 @@ bool robot::isFreeForParticle(int mx, int my) const
         return false;
 
     const int8_t v = occupancyGrid[my][mx];
-
-    //uloha5
-    // Castice generujeme iba do znamych volnych buniek.
-    // 0   = volna bunka
-    // 100 = prekazka
-    // -1  = nezname miesto, tam castice nechceme
     return v == 0;
 }
 
@@ -803,7 +795,7 @@ void robot::initMonteCarloLocalization(int particleCount)
 {
     std::lock_guard<std::mutex> lk(mclMtx);
 
-    mclParticleCount = std::max(50, particleCount);
+    mclParticleCount = std::max(500, particleCount);
     particles.clear();
     particles.reserve(mclParticleCount);
 
@@ -927,8 +919,6 @@ void robot::motionUpdateParticles(double dx_cm, double dy_cm, double dfi_rad)
     const double odomDir = std::atan2(dy_cm, dx_cm);
 
     //uloha5
-    // Pri statí necháme len veľmi malý šum, aby sa častice úplne nezlepili,
-    // ale zároveň neodplávali do nesprávnej časti mapy.
     double transSigma = 0.15;
     double dirSigma   = deg2rad(0.15);
     double rotSigma   = deg2rad(0.15);
