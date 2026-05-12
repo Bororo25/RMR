@@ -9,9 +9,21 @@
 #include <chrono>
 #include <limits>
 
-//uolha3
+//uloha3
 #include <vector>
 #include <deque>
+
+//uloha4
+#include <queue>
+#include <fstream>
+#include <string>
+#include <iostream>
+#include <utility>
+
+//uloha5
+#include <random>
+#include <algorithm>
+
 
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
@@ -48,6 +60,40 @@ public:
 
   //uloha3
   std::vector<std::vector<int8_t>> getOccupancyGrid();
+
+  void setMappingEnabled(bool enabled);
+  bool isMappingEnabled();
+
+  bool saveOccupancyMapTxt(const QString &fileName);
+  bool loadOccupancyMapTxt(const QString &fileName);
+
+  // načítanie occupancyGrid zo súboru
+  bool loadOccupancyGridFromFile(const std::string &filename);
+
+  // zapnutie/vypnutie používania iba načítanej mapy
+  void setUseLoadedMapOnly(bool value);
+
+  //uloha4
+  bool planPathToGoal(double goalX_cm, double goalY_cm);
+
+  // vráti aktuálne naplánované waypointy v centimetroch
+  std::vector<std::pair<double, double>> getPlannedPathCm();
+
+  //uloha5
+  void initMonteCarloLocalization(int particleCount = 2500);
+  void setMonteCarloEnabled(bool enabled);
+  bool isMonteCarloEnabled() const;
+
+  std::vector<std::pair<double, double>> getParticlesCm();
+  void getMonteCarloPose(double &x_cm, double &y_cm, double &fi_rad);
+
+  //uloha5
+  std::vector<std::pair<int, int>> getParticlesMapCells();
+  bool getMonteCarloPoseMapCell(int &mx, int &my, double &fi_rad);
+
+  //uloha5
+  bool isMclPoseReliable() const;
+  void applyMclPoseToOdometry();
 
 signals:
   void publishPosition(double x, double y, double z);
@@ -102,7 +148,7 @@ private:
 
   double histogramRangeCm = 180.0;
   double robotRadiusCm    = 15.0;
-  double safetyMarginCm   = 10;
+  double safetyMarginCm   = 15;
   double frontStopCm      = 24.0; //30.0 20.0
 
   double wideGapDeg       = 20.0;       // od tejto šírky ber medzeru ako "širokú" 30 20
@@ -149,6 +195,42 @@ private:
   std::vector<std::vector<uint16_t>> hitGrid;
   std::vector<std::vector<uint16_t>> freeGrid;
 
+  //uloha4
+  bool useLoadedMapOnly = false;
+  bool mappingEnabled = true;
+
+  //uloha4
+  // bod v mape - index bunky
+  struct GridPoint
+  {
+      int x;
+      int y;
+  };
+
+  // bod vo svete - centimetre
+  struct WorldPoint
+  {
+      double x_cm;
+      double y_cm;
+  };
+
+  std::vector<WorldPoint> plannedPathCm;
+  int plannedPathIndex = 0;
+  bool followingPlannedPath = false;
+
+  // true = neznáme bunky berieme ako voľné, aby sa dalo plánovať aj v nie úplne vyfarbenej mape
+  // false = bezpečnejšie, ale plánovanie môže zlyhať, ak mapa nie je kompletne prejdená
+  bool planUnknownAsFree = true;
+
+  bool mapToWorld(int mx, int my, double &wx_cm, double &wy_cm) const;
+  bool makeInflatedObstacleGrid(std::vector<std::vector<uint8_t>> &blocked) const;
+  bool extractWavePath(const std::vector<std::vector<int>> &wave,
+                       const GridPoint &start,
+                       const GridPoint &goal,
+                       std::vector<GridPoint> &rawPath) const;
+  std::vector<GridPoint> simplifyPathToCorners(const std::vector<GridPoint> &rawPath) const;
+  void startNextPlannedWaypoint();
+
   bool interpolatePose(std::uint32_t ts_us, double &ix, double &iy, double &ifi);
   static double interpAngle(double a0, double a1, double t);
 
@@ -158,6 +240,58 @@ private:
   void markCellOccupied(int mx, int my);
   void raytraceFreeCells(int x0, int y0, int x1, int y1);
   void updateMapFromLidar(const std::vector<LaserData> &laserData);
+
+  // uloha5 - Monte Carlo lokalizacia
+  struct Particle
+  {
+      double x_cm = 0.0;
+      double y_cm = 0.0;
+      double fi_rad = 0.0;
+      double weight = 1.0;
+  };
+
+  std::mutex mclMtx;
+  std::vector<Particle> particles;
+
+  bool monteCarloEnabled = false;
+  bool mclInitialized = false;
+
+  double mclX_cm = 0.0;
+  double mclY_cm = 0.0;
+  double mclFi_rad = 0.0;
+
+  int mclParticleCount = 2500;
+  int mclRandomParticles = 20;
+
+  // šum pohybu
+  double mclTransNoiseCm = 2.0;
+  double mclRotNoiseRad = 3.0 * kPi / 180.0;
+
+  // model merania
+  double mclSigmaHitCm = 14.0;
+  int mclLaserStep = 12;
+  double mclMaxLaserCm = 250.0;
+
+  //uloha5
+  double latestGyroRadAbs = 0.0;
+
+  //uloha5
+  double mclWeightedSpreadCm = 9999.0;
+  double mclBestWeight = 0.0;
+
+  //uloha5
+  double mclReliableSpreadThresholdCm = 25.0;
+  double mclReliableBestWeightThreshold = 0.003;
+
+  std::mt19937 mclRng{std::random_device{}()};
+
+  bool isFreeForParticle(int mx, int my) const;
+  bool randomFreeParticle(Particle &p);
+  void motionUpdateParticles(double dx_cm, double dy_cm, double dfi_rad);
+  void sensorUpdateParticles(const std::vector<LaserData> &laserData);
+  void resampleParticles();
+  void updateEstimatedPoseFromParticles();
+  double expectedDistanceToObstacleCm(double x_cm, double y_cm, double angle_rad, double maxDistCm) const;
 
 
   static inline double deg2rad(double d)
@@ -186,8 +320,8 @@ private:
   double kpDist = 6;
   double kpAng  = 1.3; //1.6
 
-  double vMax = 250.0;
-  double posDeadbandCm = 5.0;                  // [mm/s]
+  double vMax = 320.0;
+  double posDeadbandCm = 7.0;                  // [mm/s]
   double wMax = (kPi/2);                // [rad/s]
 
   double rotateOnlyRad = (45.0 * kPi/180.0);

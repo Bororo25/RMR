@@ -15,6 +15,9 @@
 #include <vector>
 #include <cstdint>
 
+//uloha5
+#include <utility>
+
 ///Boris Supak
 ///Martin Brandobur
 
@@ -37,6 +40,21 @@ public:
         update();
     }
 
+    //uloha5
+    void updateMcl(const std::vector<std::pair<int, int>> &newParticles,
+                   bool poseValid,
+                   int poseMx,
+                   int poseMy,
+                   double poseFiRad)
+    {
+        particles = newParticles;
+        mclPoseValid = poseValid;
+        mclPoseMx = poseMx;
+        mclPoseMy = poseMy;
+        mclPoseFiRad = poseFiRad;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *event) override
     {
@@ -44,7 +62,6 @@ protected:
 
         QPainter painter(this);
 
-        //antialiasing
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
@@ -61,21 +78,71 @@ protected:
 
         painter.setPen(Qt::NoPen);
 
+        //uloha5
         for(int my = 0; my < gridH; ++my)
         {
             for(int mx = 0; mx < gridW; ++mx)
             {
+                QRectF r(mx * cellW, my * cellH, cellW, cellH);
+
                 if(grid[my][mx] == 100)
                 {
-                    QRectF r(mx * cellW, my * cellH, cellW, cellH);
                     painter.fillRect(r, Qt::white);
                 }
+                else if(grid[my][mx] == 0)
+                {
+                    painter.fillRect(r, QColor(35, 35, 35));
+                }
             }
+        }
+
+        //uloha5
+        // Vykreslenie castic Monte Carlo lokalizacie
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::blue);
+
+        for(const auto &p : particles)
+        {
+            const int mx = p.first;
+            const int my = p.second;
+
+            if(mx < 0 || mx >= gridW || my < 0 || my >= gridH)
+                continue;
+
+            const double px = (static_cast<double>(mx) + 0.5) * cellW;
+            const double py = (static_cast<double>(my) + 0.5) * cellH;
+
+            painter.drawEllipse(QPointF(px, py), 2.0, 2.0);
+        }
+
+        //uloha5
+        // Vykreslenie odhadnutej MCL polohy
+        if(mclPoseValid)
+        {
+            const double px = (static_cast<double>(mclPoseMx) + 0.5) * cellW;
+            const double py = (static_cast<double>(mclPoseMy) + 0.5) * cellH;
+
+            painter.setPen(QPen(Qt::red, 3));
+            painter.setBrush(Qt::red);
+            painter.drawEllipse(QPointF(px, py), 6.0, 6.0);
+
+            const double lineLen = 18.0;
+            const double ex = px + lineLen * std::cos(mclPoseFiRad);
+            const double ey = py - lineLen * std::sin(mclPoseFiRad);
+
+            painter.drawLine(QPointF(px, py), QPointF(ex, ey));
         }
     }
 
 private:
     std::vector<std::vector<int8_t>> grid;
+
+    //uloha5
+    std::vector<std::pair<int, int>> particles;
+    bool mclPoseValid = false;
+    int mclPoseMx = 0;
+    int mclPoseMy = 0;
+    double mclPoseFiRad = 0.0;
 };
 }
 
@@ -105,6 +172,67 @@ MainWindow::MainWindow(QWidget *parent) :
 
     connect(saveMapBtn, &QPushButton::clicked,
             this, &MainWindow::saveMapToImage);
+
+    //uloha4
+    QPushButton *saveMapTxtBtn = new QPushButton("Uložiť TXT mapu", this);
+    saveMapTxtBtn->setGeometry(20, 60, 140, 35);
+    saveMapTxtBtn->show();
+
+    connect(saveMapTxtBtn, &QPushButton::clicked,
+            this, &MainWindow::saveMapTxt);
+
+    QPushButton *loadMapTxtBtn = new QPushButton("Načítať TXT mapu", this);
+    loadMapTxtBtn->setGeometry(20, 100, 140, 35);
+    loadMapTxtBtn->show();
+
+    //uloha5
+    QPushButton *resetMclBtn = new QPushButton("Reset MCL", this);
+    resetMclBtn->setGeometry(20, 140, 140, 35);
+    resetMclBtn->show();
+
+    connect(resetMclBtn, &QPushButton::clicked, [this]()
+            {
+                _robot.initMonteCarloLocalization(2500);
+                _robot.setMonteCarloEnabled(true);
+            });
+
+    //uloha5
+    QPushButton *applyMclBtn = new QPushButton("Použiť MCL", this);
+    applyMclBtn->setGeometry(20, 180, 140, 35);
+    applyMclBtn->show();
+
+    connect(applyMclBtn, &QPushButton::clicked, [this]()
+            {
+                _robot.applyMclPoseToOdometry();
+
+                double mclX = 0.0;
+                double mclY = 0.0;
+                double mclFi = 0.0;
+
+                _robot.getMonteCarloPose(mclX, mclY, mclFi);
+
+                curXcm = mclX;
+                curYcm = mclY;
+                curFiRad = mclFi;
+
+                ui->lineEdit_2->setText(QString::number(mclX, 'f', 2));
+                ui->lineEdit_3->setText(QString::number(mclY, 'f', 2));
+                ui->lineEdit_4->setText(QString::number(mclFi * 180.0 / M_PI, 'f', 2));
+
+                QMessageBox::information(this,
+                                         "MCL",
+                                         "Odometria bola nastavena podla aktualnej MCL polohy.");
+            });
+
+    connect(loadMapTxtBtn, &QPushButton::clicked,
+            this, &MainWindow::loadMapTxt);
+
+    //uloha5
+    std::vector<std::pair<int, int>> particles;
+    bool mclPoseValid = false;
+    int mclPoseMx = 0;
+    int mclPoseMy = 0;
+    double mclPoseFiRad = 0.0;
 
 
 #ifndef DISABLE_OPENCV
@@ -206,6 +334,54 @@ void MainWindow::paintEvent(QPaintEvent *event)
                 if(rect.contains(xp,yp))//ak je bod vo vnutri nasho obdlznika tak iba vtedy budem chciet kreslit
                     painter.drawEllipse(QPoint(xp, yp),2,2);
             }
+            // vykreslenie naplánovanej cesty z úlohy 4
+            if(!displayedPlannedPathCm.empty())
+            {
+                QPen pathPen;
+                pathPen.setWidth(3);
+                pathPen.setColor(Qt::yellow);
+                painter.setPen(pathPen);
+                painter.setBrush(Qt::yellow);
+
+                const double c = std::cos(curFiRad);
+                const double s = std::sin(curFiRad);
+                const double pxPerCm = 1.0;
+
+                const double centerX = rect.width()  / 2.0 + rect.topLeft().x();
+                const double centerY = rect.height() / 2.0 + rect.topLeft().y();
+
+                QPoint prevPoint;
+                bool havePrev = false;
+
+                for(const auto &wp : displayedPlannedPathCm)
+                {
+                    const double dx = wp.first  - curXcm;
+                    const double dy = wp.second - curYcm;
+
+                    const double fwd_cm   = dx * c + dy * s;
+                    const double right_cm = dx * s - dy * c;
+
+                    const int sx = static_cast<int>(centerX + right_cm * pxPerCm);
+                    const int sy = static_cast<int>(centerY - fwd_cm * pxPerCm);
+
+                    QPoint p(sx, sy);
+
+                    if(rect.contains(p))
+                    {
+                        painter.drawEllipse(p, 6, 6);
+
+                        if(havePrev)
+                            painter.drawLine(prevPoint, p);
+
+                        prevPoint = p;
+                        havePrev = true;
+                    }
+                    else
+                    {
+                        havePrev = false;
+                    }
+                }
+            }
         }
     }
 #ifndef DISABLE_SKELETON
@@ -266,8 +442,27 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         goalXcm = goalX;
         goalYcm = goalY;
         update();
-        //zapnutie regulacie polohy
-        _robot.startPoseControl(goalX, goalY);
+
+        //uloha4
+        // najprv sa pokúsime naplánovať cestu cez okupačnú mriežku
+        // ak plánovanie zlyhá, použije sa pôvodné priame polohovanie
+        if(_robot.planPathToGoal(goalX, goalY))
+        {
+            setWindowTitle("Planovanie OK - idem cez occupancyGrid");
+
+            // uložíme naplánované waypointy na vykreslenie
+            displayedPlannedPathCm = _robot.getPlannedPathCm();
+        }
+        else
+        {
+            _robot.stopPoseControl();
+            displayedPlannedPathCm.clear();
+
+            setWindowTitle("Planovanie zlyhalo - robot nejde priamo");
+        }
+
+        update();
+
         return true;
     }
     return QMainWindow::eventFilter(obj, event);
@@ -312,6 +507,89 @@ void MainWindow::saveMapToImage()
         return;
 
     scaled.save(fileName);
+}
+
+void MainWindow::saveMapTxt()
+{
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Uložiť occupancy mapu",
+        "occupancy_map.txt",
+        "Text files (*.txt)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    if(!_robot.saveOccupancyMapTxt(fileName))
+    {
+        QMessageBox::warning(this, "Chyba", "Mapu sa nepodarilo uložiť.");
+        return;
+    }
+
+    QMessageBox::information(this, "OK", "Mapa bola uložená.");
+}
+void MainWindow::loadMapTxt()
+{
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Načítať occupancy mapu",
+        "",
+        "Text files (*.txt)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    if(!_robot.loadOccupancyMapTxt(fileName))
+    {
+        QMessageBox::warning(this, "Chyba", "Mapu sa nepodarilo načítať.");
+        return;
+    }
+
+    // dôležité: po načítaní už nedovoľ lidaru prepisovať mapu
+    _robot.setMappingEnabled(false);
+
+    //uloha5
+    // Po nacitani hotovej mapy inicializujeme Monte Carlo lokalizaciu.
+    _robot.initMonteCarloLocalization(2500);
+    _robot.setMonteCarloEnabled(true);
+
+    if(g_mapWindow)
+        g_mapWindow->updateMap(_robot.getOccupancyGrid());
+
+    update();
+
+    QMessageBox::information(this, "OK", "Mapa bola načítaná.");
+}
+
+
+
+//uloha4
+void MainWindow::loadMapFromFile()
+{
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Načítať occupancyGrid mapu",
+        "occupancy_map.txt",
+        "Text Files (*.txt)");
+
+    if(fileName.isEmpty())
+        return;
+
+    if(_robot.loadOccupancyGridFromFile(fileName.toStdString()))
+    {
+        std::cout << "OccupancyGrid mapa bola nacitana." << std::endl;
+
+        // odteraz sa occupancyGrid nebude meniť podľa lidaru
+        _robot.setUseLoadedMapOnly(true);
+
+        update();
+    }
+    else
+    {
+        std::cout << "OccupancyGrid mapu sa nepodarilo nacitat." << std::endl;
+    }
 }
 
 void MainWindow::on_pushButton_9_clicked() //start button
@@ -421,7 +699,60 @@ int MainWindow::paintThisLidar(const std::vector<LaserData> &laserData)
 
     //uloha3
     if(g_mapWindow)
+    {
         g_mapWindow->updateMap(_robot.getOccupancyGrid());
+
+        //uloha5
+        int mclMx = 0;
+        int mclMy = 0;
+        double mclFi = 0.0;
+
+        const bool mclPoseValid = _robot.getMonteCarloPoseMapCell(mclMx, mclMy, mclFi);
+
+        g_mapWindow->updateMcl(_robot.getParticlesMapCells(),
+                               mclPoseValid,
+                               mclMx,
+                               mclMy,
+                               mclFi);
+
+
+    }
+
+    //uloha5
+    {
+        static int mclPrintCounter = 0;
+        mclPrintCounter++;
+
+        if(mclPrintCounter % 20 == 0 && _robot.isMonteCarloEnabled())
+        {
+            double mclX = 0.0;
+            double mclY = 0.0;
+            double mclFi = 0.0;
+
+            _robot.getMonteCarloPose(mclX, mclY, mclFi);
+
+            std::cout << "[uloha5 MCL] x=" << mclX
+                      << " y=" << mclY
+                      << " fiDeg=" << (mclFi * 180.0 / M_PI)
+                      << " particles=" << _robot.getParticlesCm().size()
+                      << std::endl;
+        }
+    }
+
+    //uloha5
+    if(_robot.isMonteCarloEnabled())
+    {
+        double mclX = 0.0;
+        double mclY = 0.0;
+        double mclFi = 0.0;
+
+        _robot.getMonteCarloPose(mclX, mclY, mclFi);
+
+        setWindowTitle(QString("MCL: x=%1 cm, y=%2 cm, fi=%3 deg")
+                           .arg(mclX, 0, 'f', 1)
+                           .arg(mclY, 0, 'f', 1)
+                           .arg(mclFi * 180.0 / M_PI, 0, 'f', 1));
+    }
 
     update();
     return 0;
