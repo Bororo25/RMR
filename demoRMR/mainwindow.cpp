@@ -155,7 +155,7 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
-    ipaddress= "192.168.1.14";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
+    ipaddress= "192.168.1.15";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
 
     ui->setupUi(this);
 
@@ -194,21 +194,34 @@ MainWindow::MainWindow(QWidget *parent) :
             {
                 _robot.initMonteCarloLocalization(2500);
                 _robot.setMonteCarloEnabled(true);
+            });
 
-                if(g_mapWindow)
-                {
-                    int mclMx = 0;
-                    int mclMy = 0;
-                    double mclFi = 0.0;
+    //uloha5
+    QPushButton *applyMclBtn = new QPushButton("Použiť MCL", this);
+    applyMclBtn->setGeometry(20, 180, 140, 35);
+    applyMclBtn->show();
 
-                    const bool mclPoseValid = _robot.getMonteCarloPoseMapCell(mclMx, mclMy, mclFi);
+    connect(applyMclBtn, &QPushButton::clicked, [this]()
+            {
+                _robot.applyMclPoseToOdometry();
 
-                    g_mapWindow->updateMcl(_robot.getParticlesMapCells(),
-                                           mclPoseValid,
-                                           mclMx,
-                                           mclMy,
-                                           mclFi);
-                }
+                double mclX = 0.0;
+                double mclY = 0.0;
+                double mclFi = 0.0;
+
+                _robot.getMonteCarloPose(mclX, mclY, mclFi);
+
+                curXcm = mclX;
+                curYcm = mclY;
+                curFiRad = mclFi;
+
+                ui->lineEdit_2->setText(QString::number(mclX, 'f', 2));
+                ui->lineEdit_3->setText(QString::number(mclY, 'f', 2));
+                ui->lineEdit_4->setText(QString::number(mclFi * 180.0 / M_PI, 'f', 2));
+
+                QMessageBox::information(this,
+                                         "MCL",
+                                         "Odometria bola nastavena podla aktualnej MCL polohy.");
             });
 
     connect(loadMapTxtBtn, &QPushButton::clicked,

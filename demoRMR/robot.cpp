@@ -213,7 +213,6 @@ std::vector<std::pair<double, double>> robot::getPlannedPathCm()
     return out;
 }
 
-//uloha4
 bool robot::loadOccupancyGridFromFile(const std::string &filename)
 {
     std::lock_guard<std::mutex> lk(mapMtx);
@@ -299,6 +298,7 @@ bool robot::loadOccupancyGridFromFile(const std::string &filename)
     return true;
 }
 
+//uloha4
 void robot::setUseLoadedMapOnly(bool value)
 {
     std::lock_guard<std::mutex> lk(mapMtx);
@@ -326,7 +326,6 @@ bool robot::makeInflatedObstacleGrid(std::vector<std::vector<uint8_t>> &blocked)
     if(occupancyGrid.empty() || occupancyGrid[0].empty())
         return false;
 
-    // prekážky zväčšíme o polomer robota + rezerva
     const int inflateCells = static_cast<int>(
         std::ceil((robotRadiusCm + safetyMarginCm) / mapResolutionCm));
 
@@ -486,7 +485,7 @@ std::vector<robot::GridPoint> robot::simplifyPathToCorners(const std::vector<Gri
                 rawPath[i].y - rawPath[i - 1].y
             };
 
-        // zlomový bod je bunka pred zmenou smeru
+        // zlomový bod
         if(dir.x != prevDir.x || dir.y != prevDir.y)
         {
             corners.push_back(rawPath[i - 1]);
@@ -531,7 +530,7 @@ bool robot::planPathToGoal(double gx_cm, double gy_cm)
         wave[goal.y][goal.x] = 0;
         q.push(goal);
 
-        // 4-susednosť - týmto zakazujeme diagonálne smery
+        // 4-susednosť
         const GridPoint dirs4[4] =
             {
                 { 1,  0},
@@ -583,8 +582,6 @@ bool robot::planPathToGoal(double gx_cm, double gy_cm)
                 plannedPathCm.push_back({wx, wy});
         }
 
-        // pre istotu posledný bod nastavíme presne na kliknutý cieľ,
-        // nie iba na stred cieľovej bunky
         if(!plannedPathCm.empty())
         {
             plannedPathCm.back().x_cm = gx_cm;
@@ -814,7 +811,38 @@ void robot::initMonteCarloLocalization(int particleCount)
     mclInitialized = !particles.empty();
     monteCarloEnabled = mclInitialized;
 
+    //uloha5
+    // Vypocitame, ako velmi su vahy sustredene okolo najlepsieho stavu.
+    // Cim mensi weighted spread, tym viac si MCL veri.
+    mclBestWeight = 0.0;
+
+    for(const auto &p : particles)
+    {
+        if(p.weight > mclBestWeight)
+            mclBestWeight = p.weight;
+    }
+
+    // Najprv nastavime odhad ako najlepsiu casticu.
     updateEstimatedPoseFromParticles();
+
+    double spreadSum = 0.0;
+    double spreadWeightSum = 0.0;
+
+    for(const auto &p : particles)
+    {
+        const double dx = p.x_cm - mclX_cm;
+        const double dy = p.y_cm - mclY_cm;
+        const double dist2 = dx * dx + dy * dy;
+
+        spreadSum += p.weight * dist2;
+        spreadWeightSum += p.weight;
+    }
+
+    if(spreadWeightSum > 0.0)
+        mclWeightedSpreadCm = std::sqrt(spreadSum / spreadWeightSum);
+    else
+        mclWeightedSpreadCm = 9999.0;
+
 }
 
 void robot::setMonteCarloEnabled(bool enabled)
@@ -848,6 +876,41 @@ void robot::getMonteCarloPose(double &outX_cm, double &outY_cm, double &outFi_ra
     outX_cm = mclX_cm;
     outY_cm = mclY_cm;
     outFi_rad = mclFi_rad;
+}
+
+//uloha5
+bool robot::isMclPoseReliable() const
+{
+    return monteCarloEnabled &&
+           mclInitialized &&
+           mclWeightedSpreadCm < mclReliableSpreadThresholdCm &&
+           mclBestWeight > mclReliableBestWeightThreshold;
+}
+
+//uloha5
+void robot::applyMclPoseToOdometry()
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    if(!monteCarloEnabled || !mclInitialized)
+        return;
+
+    //uloha5
+    // Manuálny režim: MCL polohu aplikujeme vždy.
+    // Používateľ si správnosť overí pohľadom na mapu.
+    x = mclX_cm;
+    y = mclY_cm;
+    fi = mclFi_rad;
+
+    //uloha5
+    // Aby gyro v ďalšom callbacku neprepísalo fi naspäť,
+    // nastavíme nový offset voči aktuálnemu gyro uhlu.
+    gyroOffsetRad = normalizeAngleRad(latestGyroRadAbs - fi);
+
+    //uloha5
+    // Zastavíme rampy/regulátorový zásah po skokovej korekcii polohy.
+    curForwCmd = 0.0;
+    curRotCmd = 0.0;
 }
 
 //uloha5
@@ -1545,6 +1608,9 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
     //ODOMETRIA
     const double gyroRadAbs = gyroRawToRad(static_cast<double>(robotdata.GyroAngle));
+
+    //uloha5
+    latestGyroRadAbs = gyroRadAbs;
 
     if(!odomInitialized)
     {
