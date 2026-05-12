@@ -148,8 +148,8 @@ private:
 
   double histogramRangeCm = 180.0;
   double robotRadiusCm    = 15.0;
-  double safetyMarginCm   = 15;
-  double frontStopCm      = 24.0; //30.0 20.0
+  double safetyMarginCm   = 8;
+  double frontStopCm      = 20.0; //30.0 20.0
 
   double wideGapDeg       = 20.0;       // od tejto šírky ber medzeru ako "širokú" 30 20
   double edgeOffsetDeg    = 5.00;       // kandidát vo vnútri kraja priechodu
@@ -162,7 +162,7 @@ private:
 
   std::vector<bool> prevBlocked;
   bool prevBlockedInitialized = false;     // prah blokovaného sektora
-  double obstacleSlowBandCm = 200.0;     // pri blízkej prekážke spomaľuj 80.0 50.0
+  double obstacleSlowBandCm = 70.0;     // pri blízkej prekážke spomaľuj 80.0 50.0
 
   double prevChosenDirRad = 0.0;        // kvôli hladšiemu výberu kandidáta
 
