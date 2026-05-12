@@ -48,6 +48,10 @@ private slots:
     void on_pushButton_4_clicked();
     void on_pushButton_clicked();
 
+    //uloha4
+    void saveMapToFile();
+    void loadMapFromFile();
+
     // úloha 3
     void saveMapToImage();
 

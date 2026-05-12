@@ -28,6 +28,14 @@ public:
         update();
     }
 
+    void updatePath(const std::vector<std::pair<int, int>> &newRawPath,
+                    const std::vector<std::pair<int, int>> &newCorners)
+    {
+        rawPath = newRawPath;
+        corners = newCorners;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -49,16 +57,55 @@ protected:
                 const int8_t val = grid[my][mx];
                 QRectF r(mx * cellW, my * cellH, cellW, cellH);
 
-                if(val == 100)
+                if(val >= 50)
                     painter.fillRect(r, Qt::white);
                 else if(val == 0)
                     painter.fillRect(r, QColor(45, 45, 45));
+            }
+        }
+        auto cellCenter = [&](int mx, int my) -> QPointF
+        {
+            return QPointF((static_cast<double>(mx) + 0.5) * cellW,
+                           (static_cast<double>(my) + 0.5) * cellH);
+        };
+
+        // celá vypočítaná cesta cez bunky
+        if(rawPath.size() >= 2)
+        {
+            QPen pathPen(Qt::green);
+            pathPen.setWidth(2);
+            painter.setPen(pathPen);
+
+            for(size_t i = 1; i < rawPath.size(); ++i)
+            {
+                QPointF a = cellCenter(rawPath[i - 1].first, rawPath[i - 1].second);
+                QPointF b = cellCenter(rawPath[i].first, rawPath[i].second);
+                painter.drawLine(a, b);
+            }
+        }
+
+        // zlomové body / waypointy
+        if(!corners.empty())
+        {
+            QPen cornerPen(Qt::yellow);
+            cornerPen.setWidth(2);
+            painter.setPen(cornerPen);
+            painter.setBrush(Qt::yellow);
+
+            const double r = 4.0;
+
+            for(const auto &p : corners)
+            {
+                QPointF c = cellCenter(p.first, p.second);
+                painter.drawEllipse(c, r, r);
             }
         }
     }
 
 private:
     std::vector<std::vector<int8_t>> grid;
+    std::vector<std::pair<int, int>> rawPath;
+    std::vector<std::pair<int, int>> corners;
 };
 }
 
@@ -83,6 +130,16 @@ MainWindow::MainWindow(QWidget *parent) :
     saveMapBtn->setGeometry(20, 20, 140, 35);
     saveMapBtn->show();
     connect(saveMapBtn, &QPushButton::clicked, this, &MainWindow::saveMapToImage);
+
+    QPushButton *saveMapFileBtn = new QPushButton("Uložiť grid", this);
+    saveMapFileBtn->setGeometry(20, 60, 140, 35);
+    saveMapFileBtn->show();
+    connect(saveMapFileBtn, &QPushButton::clicked, this, &MainWindow::saveMapToFile);
+
+    QPushButton *loadMapFileBtn = new QPushButton("Načítať grid", this);
+    loadMapFileBtn->setGeometry(20, 100, 140, 35);
+    loadMapFileBtn->show();
+    connect(loadMapFileBtn, &QPushButton::clicked, this, &MainWindow::loadMapFromFile);
 
 #ifndef DISABLE_OPENCV
     actIndex = -1;
@@ -238,8 +295,25 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         goalYcm = goalY;
         update();
 
-        // úloha 4: najprv plánovanie cez mapu, ak zlyhá, priamy regulátor
-        if(!_robot.planPathToGoal(goalX, goalY))
+        const bool planned = _robot.planPathToGoal(goalX, goalY);
+
+        if(g_mapWindow)
+        {
+            g_mapWindow->updateMap(_robot.getOccupancyGrid());
+
+            if(planned)
+            {
+                g_mapWindow->updatePath(_robot.getLastRawPathCells(),
+                                        _robot.getLastCornerPathCells());
+            }
+            else
+            {
+                g_mapWindow->updatePath(std::vector<std::pair<int, int>>{},
+                                        std::vector<std::pair<int, int>>{});
+            }
+        }
+
+        if(!planned)
             _robot.startPoseControl(goalX, goalY);
 
         return true;
@@ -286,6 +360,57 @@ void MainWindow::saveMapToImage()
         return;
 
     scaled.save(fileName);
+}
+
+//uloha4
+void MainWindow::saveMapToFile()
+{
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Uložiť occupancyGrid mapu",
+        "occupancy_map.txt",
+        "Text Files (*.txt)");
+
+    if(fileName.isEmpty())
+        return;
+
+    if(_robot.saveOccupancyGridToFile(fileName.toStdString()))
+        std::cout << "OccupancyGrid mapa bola ulozena." << std::endl;
+    else
+        std::cout << "OccupancyGrid mapu sa nepodarilo ulozit." << std::endl;
+}
+
+//uloha4
+void MainWindow::loadMapFromFile()
+{
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Načítať occupancyGrid mapu",
+        "occupancy_map.txt",
+        "Text Files (*.txt)");
+
+    if(fileName.isEmpty())
+        return;
+
+    if(_robot.loadOccupancyGridFromFile(fileName.toStdString()))
+    {
+        std::cout << "OccupancyGrid mapa bola nacitana." << std::endl;
+
+        _robot.setUseLoadedMapOnly(true);
+
+        if(g_mapWindow)
+        {
+            g_mapWindow->updateMap(_robot.getOccupancyGrid());
+            g_mapWindow->updatePath(std::vector<std::pair<int, int>>{},
+                                    std::vector<std::pair<int, int>>{});
+        }
+
+        update();
+    }
+    else
+    {
+        std::cout << "OccupancyGrid mapu sa nepodarilo nacitat." << std::endl;
+    }
 }
 
 void MainWindow::on_pushButton_9_clicked()

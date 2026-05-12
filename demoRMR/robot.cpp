@@ -77,6 +77,170 @@ std::vector<std::vector<int8_t>> robot::getOccupancyGrid()
     return occupancyGrid;
 }
 
+//uloha4
+std::vector<std::pair<int, int>> robot::getLastRawPathCells()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    std::vector<std::pair<int, int>> out;
+    out.reserve(lastRawPathGrid.size());
+
+    for(const auto &p : lastRawPathGrid)
+        out.push_back({p.x, p.y});
+
+    return out;
+}
+
+std::vector<std::pair<int, int>> robot::getLastCornerPathCells()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    std::vector<std::pair<int, int>> out;
+    out.reserve(lastCornerPathGrid.size());
+
+    for(const auto &p : lastCornerPathGrid)
+        out.push_back({p.x, p.y});
+
+    return out;
+}
+
+//uloha4
+bool robot::saveOccupancyGridToFile(const std::string &filename)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    if(occupancyGrid.empty() || occupancyGrid[0].empty())
+        return false;
+
+    std::ofstream file(filename);
+
+    if(!file.is_open())
+    {
+        std::cout << "Nepodarilo sa otvorit subor na zapis: " << filename << std::endl;
+        return false;
+    }
+
+    // Hlavička mapy:
+    // sirka vyska rozlisenie originX originY
+    file << mapWidthCells << " "
+         << mapHeightCells << " "
+         << mapResolutionCm << " "
+         << mapOriginCellX << " "
+         << mapOriginCellY << "\n";
+
+    // Dáta occupancyGrid
+    for(int y = 0; y < mapHeightCells; ++y)
+    {
+        for(int x = 0; x < mapWidthCells; ++x)
+        {
+            file << static_cast<int>(occupancyGrid[y][x]);
+
+            if(x + 1 < mapWidthCells)
+                file << " ";
+        }
+
+        file << "\n";
+    }
+
+    std::cout << "Mapa ulozena do suboru: " << filename << std::endl;
+
+    return true;
+}
+
+//uloha4
+bool robot::loadOccupancyGridFromFile(const std::string &filename)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    std::ifstream file(filename);
+
+    if(!file.is_open())
+    {
+        std::cout << "Nepodarilo sa otvorit subor na citanie: " << filename << std::endl;
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    double resolution = 0.0;
+    int originX = 0;
+    int originY = 0;
+
+    file >> width >> height >> resolution >> originX >> originY;
+
+    if(!file.good())
+    {
+        std::cout << "Chyba pri citani hlavicky mapy." << std::endl;
+        return false;
+    }
+
+    if(width <= 0 || height <= 0 || resolution <= 0.0)
+    {
+        std::cout << "Neplatne parametre mapy." << std::endl;
+        return false;
+    }
+
+    mapWidthCells = width;
+    mapHeightCells = height;
+    mapResolutionCm = resolution;
+    mapOriginCellX = originX;
+    mapOriginCellY = originY;
+
+    occupancyGrid.assign(mapHeightCells, std::vector<int8_t>(mapWidthCells, -1));
+    hitGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+    freeGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+
+    for(int y = 0; y < mapHeightCells; ++y)
+    {
+        for(int x = 0; x < mapWidthCells; ++x)
+        {
+            int val = -1;
+            file >> val;
+
+            if(!file.good())
+            {
+                std::cout << "Chyba pri citani bunky mapy." << std::endl;
+                return false;
+            }
+
+            if(val < -1)
+                val = -1;
+
+            if(val > 100)
+                val = 100;
+
+            occupancyGrid[y][x] = static_cast<int8_t>(val);
+
+            // Obnova pomocných mriežok, aby ďalšie mapovanie vedelo pokračovať
+            if(val >= 50)
+            {
+                hitGrid[y][x] = 10;
+                freeGrid[y][x] = 0;
+            }
+            else if(val == 0)
+            {
+                hitGrid[y][x] = 0;
+                freeGrid[y][x] = 10;
+            }
+            else
+            {
+                hitGrid[y][x] = 0;
+                freeGrid[y][x] = 0;
+            }
+        }
+    }
+
+    std::cout << "Mapa nacitana zo suboru: " << filename << std::endl;
+
+    return true;
+}
+
+void robot::setUseLoadedMapOnly(bool value)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+    useLoadedMapOnly = value;
+}
+
 std::vector<std::vector<int8_t>> robot::getOccupancyGridUnsafe() const
 {
     return occupancyGrid;
@@ -344,6 +508,9 @@ bool robot::planPathToGoal(double gx_cm, double gy_cm)
     {
         std::lock_guard<std::mutex> lk(mapMtx);
 
+        lastRawPathGrid.clear();
+        lastCornerPathGrid.clear();
+
         if(!worldToMap(x, y, start.x, start.y))
             return false;
         if(!worldToMap(gx_cm, gy_cm, goal.x, goal.y))
@@ -394,6 +561,11 @@ bool robot::planPathToGoal(double gx_cm, double gy_cm)
             return false;
 
         std::vector<GridPoint> corners = simplifyPathToCorners(rawPath);
+
+        // uloženie cesty pre vykreslenie v okne mapy
+        lastRawPathGrid = rawPath;
+        lastCornerPathGrid = corners;
+
         plannedPathCm.clear();
 
         for(size_t i = 1; i < corners.size(); ++i)
@@ -1059,10 +1231,13 @@ int robot::processThisLidar(const std::vector<LaserData>& laserData)
         latestLidar = laserData;
     }
 
-    updateMapFromLidar(laserData);
+    // Ak používame načítanú mapu, lidar ju už neprepisuje.
+    if(!useLoadedMapOnly)
+        updateMapFromLidar(laserData);
 
     copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);
+
     return 0;
 }
 

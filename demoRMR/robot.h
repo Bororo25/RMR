@@ -14,6 +14,12 @@
 #include <queue>
 #include <vector>
 
+//uloha4
+#include <fstream>
+#include <string>
+#include <iostream>
+#include <utility>
+
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -48,8 +54,16 @@ public:
     // úloha 3 - okupačná mriežka
     std::vector<std::vector<int8_t>> getOccupancyGrid();
 
+    //uloha4
+    bool saveOccupancyGridToFile(const std::string &filename);
+    bool loadOccupancyGridFromFile(const std::string &filename);
+    void setUseLoadedMapOnly(bool value);
+
+
     // úloha 4 - plánovanie v mape
     bool planPathToGoal(double goalX_cm, double goalY_cm);
+    std::vector<std::pair<int, int>> getLastRawPathCells();
+    std::vector<std::pair<int, int>> getLastCornerPathCells();
 
 signals:
     void publishPosition(double x, double y, double z);
@@ -151,6 +165,7 @@ private:
     std::vector<std::vector<uint16_t>> freeGrid;
 
     // --- ÚLOHA 4: PLÁNOVANIE ---
+    bool useLoadedMapOnly = false;
     struct GridPoint
     {
         int x;
@@ -166,6 +181,9 @@ private:
     std::vector<WorldPoint> plannedPathCm;
     int plannedPathIndex = 0;
     bool followingPlannedPath = false;
+
+    std::vector<GridPoint> lastRawPathGrid;
+    std::vector<GridPoint> lastCornerPathGrid;
 
     // true = neznáme bunky sa pri plánovaní berú ako voľné
     bool planUnknownAsFree = true;
