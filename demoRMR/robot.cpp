@@ -1595,6 +1595,8 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 }
 ///toto je calback na data z robota, ktory ste podhodili robotu vo funkcii initAndStartRobot
 /// vola sa vzdy ked dojdu nove data z robota. nemusite nic riesit, proste sa to stane
+///toto je calback na data z robota, ktory ste podhodili robotu vo funkcii initAndStartRobot
+/// vola sa vzdy ked dojdu nove data z robota. nemusite nic riesit, proste sa to stane
 int robot::processThisRobot(const TKobukiData &robotdata)
 {
     ///tu mozete robit s datami z robota
@@ -1610,6 +1612,8 @@ int robot::processThisRobot(const TKobukiData &robotdata)
     const double gyroRadAbs = gyroRawToRad(static_cast<double>(robotdata.GyroAngle));
 
     //uloha5
+    // Ulozime aktualny gyro uhol, aby sme vedeli po kliknuti "Pouzit MCL"
+    // spravne nastavit gyroOffsetRad.
     latestGyroRadAbs = gyroRadAbs;
 
     if(!odomInitialized)
@@ -1641,7 +1645,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
         // krok v centimetroch
         const double l_cm = 0.5 * (dL + dR) * 100.0;
-        //vzorce 10. str
+
         x += l_cm * std::cos(fi);
         y += l_cm * std::sin(fi);
 
@@ -1692,34 +1696,19 @@ int robot::processThisRobot(const TKobukiData &robotdata)
             poseHistory.pop_front();
     }
 
-
-
-    ///TU PISTE KOD... TOTO JE TO MIESTO KED NEVIETE KDE ZACAT,TAK JE TO NAOZAJ TU. AK AJ TAK NEVIETE, SPYTAJTE SA CVICIACEHO MA TU NATO STRING KTORY DA DO HLADANIA XXX
-
     ///kazdy piaty krat, aby to ui moc nepreblikavalo..
-    if(datacounter%5==0)
+    if(datacounter % 5 == 0)
     {
-
-        ///ak nastavite hodnoty priamo do prvkov okna,ako je to na tychto zakomentovanych riadkoch tak sa moze stat ze vam program padne
-        // ui->lineEdit_2->setText(QString::number(robotdata.EncoderRight));
-        //ui->lineEdit_3->setText(QString::number(robotdata.EncoderLeft));
-        //ui->lineEdit_4->setText(QString::number(robotdata.GyroAngle));
-        /// lepsi pristup je nastavit len nejaku premennu, a poslat signal oknu na prekreslenie
-        /// okno pocuva vo svojom slote a vasu premennu nastavi tak ako chcete. prikaz emit to presne takto spravi
-        /// viac o signal slotoch tu: https://doc.qt.io/qt-5/signalsandslots.html
-        ///posielame sem nezmysli.. pohrajte sa nech sem idu zmysluplne veci
         const double fiDeg = fi * 180.0 / kPi;
         emit publishPosition(x, y, fiDeg);
-        ///toto neodporucam na nejake komplikovane struktury.signal slot robi kopiu dat. radsej vtedy posielajte
-        /// prazdny signal a slot bude vykreslovat strukturu (vtedy ju musite mat samozrejme ako member premmennu v mainwindow.ak u niekoho najdem globalnu premennu,tak bude cistit bludisko zubnou kefkou.. kefku dodam)
-        /// vtedy ale odporucam pouzit mutex, aby sa vam nestalo ze budete pocas vypisovania prepisovat niekde inde
-
     }
+
     ///---tu sa posielaju rychlosti do robota... vklude zakomentujte ak si chcete spravit svoje
-    if(useDirectCommands==0)
+    if(useDirectCommands == 0)
     {
         double desForw = forwardspeed;   // [mm/s]
         double desRot  = rotationspeed;  // [rad/s]
+
         // ZDRUZENÝ REGULÁTOR POLOHY
         bool active;
         double gx, gy;
@@ -1734,7 +1723,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         {
             const double dx = gx - x;
             const double dy = gy - y;
-            const double rho = std::sqrt(dx*dx + dy*dy); // [cm]
+            const double rho = std::sqrt(dx * dx + dy * dy); // [cm]
 
             if(rho <= posDeadbandCm)
             {
@@ -1765,77 +1754,16 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 double frontMinCm = std::numeric_limits<double>::infinity();
                 bool haveCandidate = false;
 
+                //uloha5
+                // VFH pouzivame aj pri nasledovani naplanovanej cesty.
+                // Planovac dava waypoint, ale lokalne vyhybanie stale riesi VFH z ulohy 2.
                 double alphaAvoid = alphaGoal;
 
-                //uloha4
-                if(followingPlannedPath && std::fabs(alphaGoal) > deg2rad(7.0))
-                {
-                    desForw = 0.0;
-                    desRot  = clamp(kpAng * alphaGoal, -wMax * 0.55, wMax * 0.55);
-                }
-                else
-                {
-                    if(followingPlannedPath)
-                    {
-                        alphaAvoid = alphaGoal;
-                        frontMinCm = std::numeric_limits<double>::infinity();
-                    }
-                    else
-                    {
-                        const double directGoalThresholdCm = 35.0;
-                        const bool directToGoal =
-                            (rho < directGoalThresholdCm) && canGoDirectlyToGoal(alphaGoal, rho);
+                const double directGoalThresholdCm = 25.0;
+                const bool directToGoal =
+                    (rho < directGoalThresholdCm) && canGoDirectlyToGoal(alphaGoal, rho);
 
-                        if(rho < 15.0 || directToGoal)
-                        {
-                            alphaAvoid = alphaGoal;
-                            frontMinCm = std::numeric_limits<double>::infinity();
-                        }
-                        else if(avoidanceEnabled)
-                        {
-                            alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
-                        }
-                    }
-
-                    double alphaCmd = alphaAvoid;
-
-                    if(rho < 18.0)
-                    {
-                        const double blend = clamp((30.0 - rho) / 20.0, 0.0, 1.0);
-                        alphaCmd = normalizeAngleRad((1.0 - blend) * alphaAvoid + blend * alphaGoal);
-                    }
-
-                    const double steerScale = clamp(std::cos(std::fabs(alphaCmd)), 0.0, 1.0);
-
-                    double frontScale = 1.0;
-                    if(frontMinCm < obstacleSlowBandCm)
-                    {
-                        frontScale = clamp((frontMinCm - frontStopCm) /
-                                               (obstacleSlowBandCm - frontStopCm),
-                                           0.0, 1.0);
-                    }
-
-                    const double goalScale = clamp(rho / 10.0, 0.20, 1.0);
-
-                    const double localVMax = vMax;
-
-                    desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale,
-                                    0.0,
-                                    localVMax);
-
-                    desRot  = clamp(kpAng * alphaCmd, -wMax * 0.65, wMax * 0.65);
-
-                    if(frontMinCm < frontStopCm)
-                        desForw = 0.0;
-                }
-
-                /*
-                if(rho < 22.0)
-                {
-                    alphaAvoid = alphaGoal;
-                    frontMinCm = std::numeric_limits<double>::infinity();
-                }
-                else if(directToGoal)
+                if(rho < 12.0 || directToGoal)
                 {
                     alphaAvoid = alphaGoal;
                     frontMinCm = std::numeric_limits<double>::infinity();
@@ -1844,8 +1772,10 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 {
                     alphaAvoid = computeAvoidanceDirection(alphaGoal, frontMinCm, haveCandidate);
                 }
+
                 double alphaCmd = alphaAvoid;
-                if(rho < 30.0)
+
+                if(rho < 18.0)
                 {
                     const double blend = clamp((30.0 - rho) / 20.0, 0.0, 1.0);
                     alphaCmd = normalizeAngleRad((1.0 - blend) * alphaAvoid + blend * alphaGoal);
@@ -1858,24 +1788,36 @@ int robot::processThisRobot(const TKobukiData &robotdata)
                 {
                     frontScale = clamp((frontMinCm - frontStopCm) /
                                            (obstacleSlowBandCm - frontStopCm),
-                                       0.0, 1.0);
+                                       0.0,
+                                       1.0);
                 }
 
                 const double goalScale = clamp(rho / 10.0, 0.20, 1.0);
 
-                desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale, 0.0, vMax);
-                desRot  = clamp(kpAng * alphaCmd, -wMax*0.75, wMax*0.75);
+                const double localVMax = vMax;
+
+                desForw = clamp(kpDist * rho * steerScale * frontScale * goalScale,
+                                0.0,
+                                localVMax);
+
+                desRot = clamp(kpAng * alphaCmd,
+                               -wMax * 0.65,
+                               wMax * 0.65);
 
                 if(frontMinCm < frontStopCm)
                     desForw = 0.0;
-                */
             }
         }
+
         // deadband
         const double forwDeadband = 8.0;
         const double rotDeadband  = 0.05;
-        if (std::fabs(desForw) <= forwDeadband) desForw = 0.0;
-        if (std::fabs(desRot)  <= rotDeadband)  desRot  = 0.0;
+
+        if(std::fabs(desForw) <= forwDeadband)
+            desForw = 0.0;
+
+        if(std::fabs(desRot) <= rotDeadband)
+            desRot = 0.0;
 
         if(!active && desForw != 0.0 && desRot != 0.0)
             desForw = 0.0;
@@ -1942,10 +1884,11 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         else
         {
             double radius = curForwCmd / curRotCmd; // mm
-            radius = clamp(radius, -100000.0, 100000.0); // bezpečný limit
+            radius = clamp(radius, -100000.0, 100000.0);
             robotCom.setArcSpeed(static_cast<int>(curForwCmd), static_cast<int>(radius));
         }
     }
+
     datacounter++;
 
     return 0;
