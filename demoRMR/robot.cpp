@@ -749,6 +749,369 @@ void robot::updateMapFromLidar(const std::vector<LaserData> &laserData)
     }
 }
 
+
+//uloha5
+bool robot::isFreeForParticle(int mx, int my) const
+{
+    if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+        return false;
+
+    const int8_t v = occupancyGrid[my][mx];
+
+    //uloha5
+    // Castice generujeme iba do znamych volnych buniek.
+    // 0   = volna bunka
+    // 100 = prekazka
+    // -1  = nezname miesto, tam castice nechceme
+    return v == 0;
+}
+
+bool robot::randomFreeParticle(Particle &p)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    if(occupancyGrid.empty() || occupancyGrid[0].empty())
+        return false;
+
+    std::uniform_int_distribution<int> distX(0, mapWidthCells - 1);
+    std::uniform_int_distribution<int> distY(0, mapHeightCells - 1);
+    std::uniform_real_distribution<double> distFi(-kPi, kPi);
+
+    for(int attempt = 0; attempt < 2000; ++attempt)
+    {
+        const int mx = distX(mclRng);
+        const int my = distY(mclRng);
+
+        if(!isFreeForParticle(mx, my))
+            continue;
+
+        double wx, wy;
+        if(!mapToWorld(mx, my, wx, wy))
+            continue;
+
+        p.x_cm = wx;
+        p.y_cm = wy;
+        p.fi_rad = distFi(mclRng);
+        p.weight = 1.0;
+        return true;
+    }
+
+    return false;
+}
+
+void robot::initMonteCarloLocalization(int particleCount)
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    mclParticleCount = std::max(50, particleCount);
+    particles.clear();
+    particles.reserve(mclParticleCount);
+
+    for(int i = 0; i < mclParticleCount; ++i)
+    {
+        Particle p;
+        if(randomFreeParticle(p))
+            particles.push_back(p);
+    }
+
+    const double w = particles.empty() ? 1.0 : 1.0 / static_cast<double>(particles.size());
+
+    for(auto &p : particles)
+        p.weight = w;
+
+    mclInitialized = !particles.empty();
+    monteCarloEnabled = mclInitialized;
+
+    updateEstimatedPoseFromParticles();
+}
+
+void robot::setMonteCarloEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+    monteCarloEnabled = enabled;
+}
+
+bool robot::isMonteCarloEnabled() const
+{
+    return monteCarloEnabled;
+}
+
+std::vector<std::pair<double, double>> robot::getParticlesCm()
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    std::vector<std::pair<double, double>> out;
+    out.reserve(particles.size());
+
+    for(const auto &p : particles)
+        out.push_back({p.x_cm, p.y_cm});
+
+    return out;
+}
+
+void robot::getMonteCarloPose(double &outX_cm, double &outY_cm, double &outFi_rad)
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    outX_cm = mclX_cm;
+    outY_cm = mclY_cm;
+    outFi_rad = mclFi_rad;
+}
+
+//uloha5
+std::vector<std::pair<int, int>> robot::getParticlesMapCells()
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    std::vector<std::pair<int, int>> out;
+    out.reserve(particles.size());
+
+    for(const auto &p : particles)
+    {
+        int mx = 0;
+        int my = 0;
+
+        if(worldToMap(p.x_cm, p.y_cm, mx, my))
+            out.push_back({mx, my});
+    }
+
+    return out;
+}
+
+//uloha5
+bool robot::getMonteCarloPoseMapCell(int &mx, int &my, double &fi_rad)
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    fi_rad = mclFi_rad;
+
+    return worldToMap(mclX_cm, mclY_cm, mx, my);
+}
+
+
+double robot::expectedDistanceToObstacleCm(double x_cm,
+                                           double y_cm,
+                                           double angle_rad,
+                                           double maxDistCm) const
+{
+    const double stepCm = mapResolutionCm * 0.75;
+
+    for(double d = 0.0; d <= maxDistCm; d += stepCm)
+    {
+        const double px = x_cm + d * std::cos(angle_rad);
+        const double py = y_cm + d * std::sin(angle_rad);
+
+        int mx, my;
+        if(!worldToMap(px, py, mx, my))
+            return d;
+
+        if(mx < 0 || mx >= mapWidthCells || my < 0 || my >= mapHeightCells)
+            return d;
+
+        if(occupancyGrid[my][mx] >= 50)
+            return d;
+    }
+
+    return maxDistCm;
+}
+
+//uloha5
+void robot::motionUpdateParticles(double dx_cm, double dy_cm, double dfi_rad)
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    if(!monteCarloEnabled || !mclInitialized || particles.empty())
+        return;
+
+    const double odomDist = std::sqrt(dx_cm * dx_cm + dy_cm * dy_cm);
+    const double odomDir = std::atan2(dy_cm, dx_cm);
+
+    //uloha5
+    // Pri statí necháme len veľmi malý šum, aby sa častice úplne nezlepili,
+    // ale zároveň neodplávali do nesprávnej časti mapy.
+    double transSigma = 0.15;
+    double dirSigma   = deg2rad(0.15);
+    double rotSigma   = deg2rad(0.15);
+
+    if(odomDist >= 0.05 || std::fabs(dfi_rad) >= deg2rad(0.05))
+    {
+        //uloha5
+        // Pri reálnom pohybe rastie šum podľa veľkosti posunu a otočenia.
+        transSigma = 0.3 + 0.05 * std::fabs(odomDist) + 0.8 * std::fabs(dfi_rad);
+        dirSigma   = deg2rad(0.3) + 0.015 * std::fabs(odomDist);
+        rotSigma   = deg2rad(0.3) + 0.02 * std::fabs(odomDist) + 0.10 * std::fabs(dfi_rad);
+    }
+
+    std::normal_distribution<double> noiseTrans(0.0, transSigma);
+    std::normal_distribution<double> noiseDir(0.0, dirSigma);
+    std::normal_distribution<double> noiseRot(0.0, rotSigma);
+
+    for(auto &p : particles)
+    {
+        const double noisyDist = odomDist + noiseTrans(mclRng);
+        const double noisyDir = odomDir + noiseDir(mclRng);
+        const double noisyRot = dfi_rad + noiseRot(mclRng);
+
+        p.x_cm += noisyDist * std::cos(noisyDir);
+        p.y_cm += noisyDist * std::sin(noisyDir);
+        p.fi_rad = normalizeAngleRad(p.fi_rad + noisyRot);
+
+        int mx, my;
+        if(!worldToMap(p.x_cm, p.y_cm, mx, my) || !isFreeForParticle(mx, my))
+            p.weight *= 0.05;
+    }
+}
+
+void robot::sensorUpdateParticles(const std::vector<LaserData> &laserData)
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    if(!monteCarloEnabled || !mclInitialized || particles.empty())
+        return;
+
+    if(laserData.empty())
+        return;
+
+    std::lock_guard<std::mutex> mapLock(mapMtx);
+
+    double weightSum = 0.0;
+
+    for(auto &p : particles)
+    {
+        double err = 0.0;
+        int used = 0;
+
+        for(size_t i = 0; i < laserData.size(); i += static_cast<size_t>(mclLaserStep))
+        {
+            const auto &ld = laserData[i];
+
+            const double measuredCm = static_cast<double>(ld.scanDistance) / 10.0;
+
+            if(measuredCm < 10.0 || measuredCm > mclMaxLaserCm)
+                continue;
+
+            const double localAngleRad = deg2rad(-static_cast<double>(ld.scanAngle));
+            const double globalAngle = p.fi_rad + localAngleRad;
+
+            const double expectedCm =
+                expectedDistanceToObstacleCm(p.x_cm, p.y_cm, globalAngle, mclMaxLaserCm);
+
+            const double diff = measuredCm - expectedCm;
+            err += diff * diff;
+            ++used;
+        }
+
+        if(used == 0)
+        {
+            p.weight = 1e-9;
+            continue;
+        }
+
+        const double meanErr = err / static_cast<double>(used);
+        const double sigma2 = mclSigmaHitCm * mclSigmaHitCm;
+
+        p.weight = std::exp(-meanErr / (2.0 * sigma2)) + 1e-12;
+        weightSum += p.weight;
+    }
+
+    if(weightSum <= 0.0)
+    {
+        const double w = 1.0 / static_cast<double>(particles.size());
+
+        for(auto &p : particles)
+            p.weight = w;
+    }
+    else
+    {
+        for(auto &p : particles)
+            p.weight /= weightSum;
+    }
+
+    updateEstimatedPoseFromParticles();
+}
+
+void robot::resampleParticles()
+{
+    std::lock_guard<std::mutex> lk(mclMtx);
+
+    if(!monteCarloEnabled || !mclInitialized || particles.empty())
+        return;
+
+    std::vector<Particle> newParticles;
+    newParticles.reserve(particles.size());
+
+    std::vector<double> cumulative;
+    cumulative.reserve(particles.size());
+
+    double sum = 0.0;
+
+    for(const auto &p : particles)
+    {
+        sum += p.weight;
+        cumulative.push_back(sum);
+    }
+
+    if(sum <= 0.0)
+        return;
+
+    std::uniform_real_distribution<double> roulette(0.0, sum);
+
+    const int randomCount = std::min(mclRandomParticles, static_cast<int>(particles.size()));
+
+    for(size_t i = 0; i < particles.size(); ++i)
+    {
+        if(static_cast<int>(i) < randomCount)
+        {
+            Particle rp;
+            if(randomFreeParticle(rp))
+            {
+                newParticles.push_back(rp);
+                continue;
+            }
+        }
+
+        const double r = roulette(mclRng);
+        const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), r);
+        const size_t idx = static_cast<size_t>(std::distance(cumulative.begin(), it));
+
+        Particle selected = particles[std::min(idx, particles.size() - 1)];
+        selected.weight = 1.0;
+        newParticles.push_back(selected);
+    }
+
+    particles = std::move(newParticles);
+
+    const double w = 1.0 / static_cast<double>(particles.size());
+
+    for(auto &p : particles)
+        p.weight = w;
+}
+
+//uloha5
+void robot::updateEstimatedPoseFromParticles()
+{
+    if(particles.empty())
+        return;
+
+    //uloha5
+    // Podla zadania berieme ako aktualnu polohu stav s najvyssou vahou.
+    // Vazený priemer moze byt zly, ak su castice rozdelene do viacerych zhlukov.
+    auto bestIt = std::max_element(
+        particles.begin(),
+        particles.end(),
+        [](const Particle &a, const Particle &b)
+        {
+            return a.weight < b.weight;
+        });
+
+    if(bestIt == particles.end())
+        return;
+
+    mclX_cm = bestIt->x_cm;
+    mclY_cm = bestIt->y_cm;
+    mclFi_rad = bestIt->fi_rad;
+}
+
 void robot::initAndStartRobot(std::string ipaddress)
 {
 
@@ -1182,6 +1545,14 @@ double robot::computeAvoidanceDirection(double goalDirRad,
 int robot::processThisRobot(const TKobukiData &robotdata)
 {
     ///tu mozete robit s datami z robota
+
+    //uloha5
+    // Ulozime si polohu pred aktualizaciou odometrie.
+    // Z rozdielu starej a novej polohy potom posunieme castice.
+    const double oldX = x;
+    const double oldY = y;
+    const double oldFi = fi;
+
     //ODOMETRIA
     const double gyroRadAbs = gyroRawToRad(static_cast<double>(robotdata.GyroAngle));
 
@@ -1221,6 +1592,17 @@ int robot::processThisRobot(const TKobukiData &robotdata)
         fi = newFi;
     }
 
+    //uloha5
+    // Pohybovy model Monte Carlo lokalizacie.
+    // Po odometrii zistime, aky pohyb robot spravil, a aplikujeme ho na castice.
+    {
+        const double dxMcl = x - oldX;
+        const double dyMcl = y - oldY;
+        const double dfiMcl = normalizeAngleRad(fi - oldFi);
+
+        motionUpdateParticles(dxMcl, dyMcl, dfiMcl);
+    }
+
     //uloha3
     {
         static std::uint32_t prevTsOmega = 0;
@@ -1256,7 +1638,7 @@ int robot::processThisRobot(const TKobukiData &robotdata)
 
 
 
-///TU PISTE KOD... TOTO JE TO MIESTO KED NEVIETE KDE ZACAT,TAK JE TO NAOZAJ TU. AK AJ TAK NEVIETE, SPYTAJTE SA CVICIACEHO MA TU NATO STRING KTORY DA DO HLADANIA XXX
+    ///TU PISTE KOD... TOTO JE TO MIESTO KED NEVIETE KDE ZACAT,TAK JE TO NAOZAJ TU. AK AJ TAK NEVIETE, SPYTAJTE SA CVICIACEHO MA TU NATO STRING KTORY DA DO HLADANIA XXX
 
     ///kazdy piaty krat, aby to ui moc nepreblikavalo..
     if(datacounter%5==0)
@@ -1511,9 +1893,10 @@ int robot::processThisRobot(const TKobukiData &robotdata)
     datacounter++;
 
     return 0;
-
 }
 
+///toto je calback na data z lidaru, ktory ste podhodili robotu vo funkcii initAndStartRobot
+/// vola sa ked dojdu nove data z lidaru
 ///toto je calback na data z lidaru, ktory ste podhodili robotu vo funkcii initAndStartRobot
 /// vola sa ked dojdu nove data z lidaru
 int robot::processThisLidar(const std::vector<LaserData>& laserData)
@@ -1526,6 +1909,16 @@ int robot::processThisLidar(const std::vector<LaserData>& laserData)
     // mapu aktualizuj z lidaru iba vtedy, keď je mapovanie zapnuté
     if(isMappingEnabled())
         updateMapFromLidar(laserData);
+
+    //uloha5
+    // Lidarove meranie urci vahy castic.
+    // Odhad polohy sa vypocita este pred prevzorkovanim, ked maju castice realne vahy.
+    // Potom sa spravi resampling pre dalsi krok algoritmu.
+    if(monteCarloEnabled)
+    {
+        sensorUpdateParticles(laserData);
+        resampleParticles();
+    }
 
     copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);

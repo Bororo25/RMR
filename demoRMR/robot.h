@@ -20,6 +20,10 @@
 #include <iostream>
 #include <utility>
 
+//uloha5
+#include <random>
+#include <algorithm>
+
 
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
@@ -74,6 +78,18 @@ public:
 
   // vráti aktuálne naplánované waypointy v centimetroch
   std::vector<std::pair<double, double>> getPlannedPathCm();
+
+  //uloha5
+  void initMonteCarloLocalization(int particleCount = 700);
+  void setMonteCarloEnabled(bool enabled);
+  bool isMonteCarloEnabled() const;
+
+  std::vector<std::pair<double, double>> getParticlesCm();
+  void getMonteCarloPose(double &x_cm, double &y_cm, double &fi_rad);
+
+  //uloha5
+  std::vector<std::pair<int, int>> getParticlesMapCells();
+  bool getMonteCarloPoseMapCell(int &mx, int &my, double &fi_rad);
 
 signals:
   void publishPosition(double x, double y, double z);
@@ -220,6 +236,47 @@ private:
   void markCellOccupied(int mx, int my);
   void raytraceFreeCells(int x0, int y0, int x1, int y1);
   void updateMapFromLidar(const std::vector<LaserData> &laserData);
+
+  // uloha5 - Monte Carlo lokalizacia
+  struct Particle
+  {
+      double x_cm = 0.0;
+      double y_cm = 0.0;
+      double fi_rad = 0.0;
+      double weight = 1.0;
+  };
+
+  std::mutex mclMtx;
+  std::vector<Particle> particles;
+
+  bool monteCarloEnabled = false;
+  bool mclInitialized = false;
+
+  double mclX_cm = 0.0;
+  double mclY_cm = 0.0;
+  double mclFi_rad = 0.0;
+
+  int mclParticleCount = 2500;
+  int mclRandomParticles = 20;
+
+  // šum pohybu
+  double mclTransNoiseCm = 2.0;
+  double mclRotNoiseRad = 3.0 * kPi / 180.0;
+
+  // model merania
+  double mclSigmaHitCm = 14.0;
+  int mclLaserStep = 12;
+  double mclMaxLaserCm = 250.0;
+
+  std::mt19937 mclRng{std::random_device{}()};
+
+  bool isFreeForParticle(int mx, int my) const;
+  bool randomFreeParticle(Particle &p);
+  void motionUpdateParticles(double dx_cm, double dy_cm, double dfi_rad);
+  void sensorUpdateParticles(const std::vector<LaserData> &laserData);
+  void resampleParticles();
+  void updateEstimatedPoseFromParticles();
+  double expectedDistanceToObstacleCm(double x_cm, double y_cm, double angle_rad, double maxDistCm) const;
 
 
   static inline double deg2rad(double d)
