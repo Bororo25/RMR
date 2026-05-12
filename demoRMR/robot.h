@@ -91,6 +91,10 @@ public:
   std::vector<std::pair<int, int>> getParticlesMapCells();
   bool getMonteCarloPoseMapCell(int &mx, int &my, double &fi_rad);
 
+  //uloha5
+  bool isMclPoseReliable() const;
+  void applyMclPoseToOdometry();
+
 signals:
   void publishPosition(double x, double y, double z);
   void publishLidar(const std::vector<LaserData> &lidata);
@@ -268,6 +272,17 @@ private:
   int mclLaserStep = 12;
   //zmenit na 10m
   double mclMaxLaserCm = 250.0;
+
+  //uloha5
+  double latestGyroRadAbs = 0.0;
+
+  //uloha5
+  double mclWeightedSpreadCm = 9999.0;
+  double mclBestWeight = 0.0;
+
+  //uloha5
+  double mclReliableSpreadThresholdCm = 25.0;
+  double mclReliableBestWeightThreshold = 0.003;
 
   std::mt19937 mclRng{std::random_device{}()};
 
