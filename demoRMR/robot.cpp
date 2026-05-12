@@ -764,7 +764,7 @@ bool robot::randomFreeParticle(Particle &p)
 
     if(occupancyGrid.empty() || occupancyGrid[0].empty())
         return false;
-
+    //prepisat na static
     std::uniform_int_distribution<int> distX(0, mapWidthCells - 1);
     std::uniform_int_distribution<int> distY(0, mapHeightCells - 1);
     std::uniform_real_distribution<double> distFi(-kPi, kPi);
@@ -922,7 +922,7 @@ void robot::motionUpdateParticles(double dx_cm, double dy_cm, double dfi_rad)
     double transSigma = 0.15;
     double dirSigma   = deg2rad(0.15);
     double rotSigma   = deg2rad(0.15);
-
+    //prepisat polohu amcr, pomocou polohu z odometrie
     if(odomDist >= 0.05 || std::fabs(dfi_rad) >= deg2rad(0.05))
     {
         //uloha5

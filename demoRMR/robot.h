@@ -266,6 +266,7 @@ private:
   // model merania
   double mclSigmaHitCm = 14.0;
   int mclLaserStep = 12;
+  //zmenit na 10m
   double mclMaxLaserCm = 250.0;
 
   std::mt19937 mclRng{std::random_device{}()};

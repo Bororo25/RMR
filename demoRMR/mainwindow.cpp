@@ -14,7 +14,7 @@
 #include <QPushButton>
 #include <vector>
 #include <cstdint>
-
+#include <QDoubleValidator>
 //uloha5
 #include <utility>
 
@@ -155,9 +155,16 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
-    ipaddress= "192.168.1.14";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
+    ipaddress= "127.0.0.1";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
 
     ui->setupUi(this);
+
+    // validátory pre zadávanie cieľovej pozície v centimetroch
+    ui->lineEdit_goalX->setValidator(new QDoubleValidator(-10000.0, 10000.0, 2, this));
+    ui->lineEdit_goalY->setValidator(new QDoubleValidator(-10000.0, 10000.0, 2, this));
+
+    ui->lineEdit_goalX->setPlaceholderText("X v cm");
+    ui->lineEdit_goalY->setPlaceholderText("Y v cm");
 
     //pridanie na event z mysky
     ui->widget->installEventFilter(this);
@@ -454,7 +461,55 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     }
     return QMainWindow::eventFilter(obj, event);
 }
+void MainWindow::on_pushButton_goToGoal_clicked()
+{
+    bool okX = false;
+    bool okY = false;
 
+    QString xText = ui->lineEdit_goalX->text();
+    QString yText = ui->lineEdit_goalY->text();
+
+    // aby fungovalo aj zadanie s čiarkou, napr. 120,5
+    xText.replace(",", ".");
+    yText.replace(",", ".");
+
+    const double goalX = xText.toDouble(&okX);
+    const double goalY = yText.toDouble(&okY);
+
+    if(!okX || !okY)
+    {
+        QMessageBox::warning(this,
+                             "Neplatný cieľ",
+                             "Zadaj platné hodnoty X a Y v centimetroch.");
+        return;
+    }
+
+    // uloženie cieľa pre žltý marker v hlavnom okne
+    goalMarkerValid = true;
+    goalXcm = goalX;
+    goalYcm = goalY;
+
+    // pokus o naplánovanie cesty cez occupancyGrid
+    if(_robot.planPathToGoal(goalX, goalY))
+    {
+        displayedPlannedPathCm = _robot.getPlannedPathCm();
+
+        setWindowTitle(QString("Navigácia na cieľ: X=%1 cm, Y=%2 cm")
+                           .arg(goalX, 0, 'f', 1)
+                           .arg(goalY, 0, 'f', 1));
+    }
+    else
+    {
+        _robot.stopPoseControl();
+        displayedPlannedPathCm.clear();
+
+        QMessageBox::warning(this,
+                             "Plánovanie zlyhalo",
+                             "Nepodarilo sa nájsť cestu na zadaný cieľ.");
+    }
+
+    update();
+}
 //uloha3
 void MainWindow::saveMapToImage()
 {
