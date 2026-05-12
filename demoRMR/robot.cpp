@@ -69,6 +69,243 @@ std::vector<std::vector<int8_t>> robot::getOccupancyGrid()
     return occupancyGrid;
 }
 
+void robot::setMappingEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+    mappingEnabled = enabled;
+}
+
+bool robot::isMappingEnabled()
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+    return mappingEnabled;
+}
+
+bool robot::saveOccupancyMapTxt(const QString &fileName)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    if(occupancyGrid.empty() || occupancyGrid[0].empty())
+        return false;
+
+    std::ofstream file(fileName.toStdString());
+
+    if(!file.is_open())
+        return false;
+
+    file << mapWidthCells << " "
+         << mapHeightCells << " "
+         << mapResolutionCm << " "
+         << mapOriginCellX << " "
+         << mapOriginCellY << "\n";
+
+    for(int y = 0; y < mapHeightCells; ++y)
+    {
+        for(int x = 0; x < mapWidthCells; ++x)
+        {
+            file << static_cast<int>(occupancyGrid[y][x]);
+
+            if(x + 1 < mapWidthCells)
+                file << " ";
+        }
+
+        file << "\n";
+    }
+
+    return true;
+}
+bool robot::loadOccupancyMapTxt(const QString &fileName)
+{
+    std::ifstream file(fileName.toStdString());
+
+    if(!file.is_open())
+        return false;
+
+    int loadedWidth = 0;
+    int loadedHeight = 0;
+    double loadedResolution = 0.0;
+    int loadedOriginX = 0;
+    int loadedOriginY = 0;
+
+    file >> loadedWidth
+        >> loadedHeight
+        >> loadedResolution
+        >> loadedOriginX
+        >> loadedOriginY;
+
+    if(!file.good())
+        return false;
+
+    if(loadedWidth <= 0 || loadedHeight <= 0 || loadedResolution <= 0.0)
+        return false;
+
+    std::vector<std::vector<int8_t>> newGrid(
+        loadedHeight,
+        std::vector<int8_t>(loadedWidth, -1)
+        );
+
+    std::vector<std::vector<uint16_t>> newHitGrid(
+        loadedHeight,
+        std::vector<uint16_t>(loadedWidth, 0)
+        );
+
+    std::vector<std::vector<uint16_t>> newFreeGrid(
+        loadedHeight,
+        std::vector<uint16_t>(loadedWidth, 0)
+        );
+
+    for(int y = 0; y < loadedHeight; ++y)
+    {
+        for(int x = 0; x < loadedWidth; ++x)
+        {
+            int value = -1;
+            file >> value;
+
+            if(!file.good())
+                return false;
+
+            if(value >= 50)
+            {
+                newGrid[y][x] = 100;
+                newHitGrid[y][x] = 10;
+            }
+            else if(value == 0)
+            {
+                newGrid[y][x] = 0;
+                newFreeGrid[y][x] = 10;
+            }
+            else
+            {
+                newGrid[y][x] = -1;
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(mapMtx);
+
+        mapWidthCells = loadedWidth;
+        mapHeightCells = loadedHeight;
+        mapResolutionCm = loadedResolution;
+        mapOriginCellX = loadedOriginX;
+        mapOriginCellY = loadedOriginY;
+
+        occupancyGrid = std::move(newGrid);
+        hitGrid = std::move(newHitGrid);
+        freeGrid = std::move(newFreeGrid);
+    }
+
+    return true;
+}
+
+
+//uloha4
+std::vector<std::pair<double, double>> robot::getPlannedPathCm()
+{
+    std::lock_guard<std::mutex> lk(controlMtx);
+
+    std::vector<std::pair<double, double>> out;
+    out.reserve(plannedPathCm.size());
+
+    for(const auto &p : plannedPathCm)
+        out.push_back({p.x_cm, p.y_cm});
+
+    return out;
+}
+
+//uloha4
+bool robot::loadOccupancyGridFromFile(const std::string &filename)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    std::ifstream file(filename);
+
+    if(!file.is_open())
+    {
+        std::cout << "Nepodarilo sa otvorit subor na citanie: " << filename << std::endl;
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    double resolution = 0.0;
+    int originX = 0;
+    int originY = 0;
+
+    file >> width >> height >> resolution >> originX >> originY;
+
+    if(!file.good())
+    {
+        std::cout << "Chyba pri citani hlavicky mapy." << std::endl;
+        return false;
+    }
+
+    if(width <= 0 || height <= 0 || resolution <= 0.0)
+    {
+        std::cout << "Neplatne parametre mapy." << std::endl;
+        return false;
+    }
+
+    mapWidthCells = width;
+    mapHeightCells = height;
+    mapResolutionCm = resolution;
+    mapOriginCellX = originX;
+    mapOriginCellY = originY;
+
+    occupancyGrid.assign(mapHeightCells, std::vector<int8_t>(mapWidthCells, -1));
+    hitGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+    freeGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+
+    for(int y = 0; y < mapHeightCells; ++y)
+    {
+        for(int x = 0; x < mapWidthCells; ++x)
+        {
+            int val = -1;
+            file >> val;
+
+            if(!file.good())
+            {
+                std::cout << "Chyba pri citani bunky mapy." << std::endl;
+                return false;
+            }
+
+            if(val < -1)
+                val = -1;
+
+            if(val > 100)
+                val = 100;
+
+            occupancyGrid[y][x] = static_cast<int8_t>(val);
+
+            if(val >= 50)
+            {
+                hitGrid[y][x] = 10;
+                freeGrid[y][x] = 0;
+            }
+            else if(val == 0)
+            {
+                hitGrid[y][x] = 0;
+                freeGrid[y][x] = 10;
+            }
+            else
+            {
+                hitGrid[y][x] = 0;
+                freeGrid[y][x] = 0;
+            }
+        }
+    }
+
+    std::cout << "OccupancyGrid mapa nacitana zo suboru: " << filename << std::endl;
+    return true;
+}
+
+void robot::setUseLoadedMapOnly(bool value)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+    useLoadedMapOnly = value;
+}
+
+
 //uloha4
 bool robot::mapToWorld(int mx, int my, double &wx_cm, double &wy_cm) const
 {
@@ -540,31 +777,42 @@ void robot::initAndStartRobot(std::string ipaddress)
 
     //uloha3
     currentOmegaRad = 0.0;
-    initOccupancyGrid();
+
+    // DÔLEŽITÉ:
+    // mapu inicializuj iba vtedy, keď ešte nie je načítaná/vytvorená
+    {
+        std::lock_guard<std::mutex> lk(mapMtx);
+
+        if(occupancyGrid.empty())
+        {
+            occupancyGrid.assign(mapHeightCells, std::vector<int8_t>(mapWidthCells, -1));
+            hitGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+            freeGrid.assign(mapHeightCells, std::vector<uint16_t>(mapWidthCells, 0));
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lk(poseHistoryMtx);
         poseHistory.clear();
     }
 
-
     lastRobotTimestampUs = 0;
     rampTimestampInitialized = false;
     datacounter = 0;
     useDirectCommands = 0;
-    ///setovanie veci na komunikaciu s robotom/lidarom/kamerou.. su tam adresa porty a callback.. laser ma ze sa da dat callback aj ako lambda.
-    /// lambdy su super, setria miesto a ak su rozumnej dlzky,tak aj prehladnost... ak ste o nich nic nepoculi poradte sa s vasim doktorom alebo lekarnikom...
+
     robotCom.setLaserParameters([this](const std::vector<LaserData>& dat)->int{return processThisLidar(dat);},ipaddress);
     robotCom.setRobotParameters([this](const TKobukiData& dat)->int{return processThisRobot(dat);},ipaddress);
-  #ifndef DISABLE_OPENCV
+
+#ifndef DISABLE_OPENCV
     robotCom.setCameraParameters(std::bind(&robot::processThisCamera,this,std::placeholders::_1),"http://"+ipaddress+":8000/stream.mjpg");
 #endif
-   #ifndef DISABLE_SKELETON
-      robotCom.setSkeletonParameters(std::bind(&robot::processThisSkeleton,this,std::placeholders::_1));
+
+#ifndef DISABLE_SKELETON
+    robotCom.setSkeletonParameters(std::bind(&robot::processThisSkeleton,this,std::placeholders::_1));
 #endif
-    ///ked je vsetko nasetovane tak to tento prikaz spusti (ak nieco nieje setnute,tak to normalne nenastavi.cize ak napr nechcete kameru,vklude vsetky info o nej vymazte)
+
     robotCom.robotStart();
-
-
 }
 
 void robot::setSpeedVal(double forw, double rots)
@@ -1275,8 +1523,9 @@ int robot::processThisLidar(const std::vector<LaserData>& laserData)
         latestLidar = laserData;
     }
 
-    //uloha3
-    updateMapFromLidar(laserData);
+    // mapu aktualizuj z lidaru iba vtedy, keď je mapovanie zapnuté
+    if(isMappingEnabled())
+        updateMapFromLidar(laserData);
 
     copyOfLaserData = laserData;
     emit publishLidar(copyOfLaserData);

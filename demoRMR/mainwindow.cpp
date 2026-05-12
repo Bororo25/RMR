@@ -88,7 +88,7 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
-    ipaddress= "192.168.1.14";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
+    ipaddress= "127.0.0.1";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
 
     ui->setupUi(this);
 
@@ -105,6 +105,21 @@ MainWindow::MainWindow(QWidget *parent) :
 
     connect(saveMapBtn, &QPushButton::clicked,
             this, &MainWindow::saveMapToImage);
+
+    //uloha4
+    QPushButton *saveMapTxtBtn = new QPushButton("Uložiť TXT mapu", this);
+    saveMapTxtBtn->setGeometry(20, 60, 140, 35);
+    saveMapTxtBtn->show();
+
+    connect(saveMapTxtBtn, &QPushButton::clicked,
+            this, &MainWindow::saveMapTxt);
+
+    QPushButton *loadMapTxtBtn = new QPushButton("Načítať TXT mapu", this);
+    loadMapTxtBtn->setGeometry(20, 100, 140, 35);
+    loadMapTxtBtn->show();
+
+    connect(loadMapTxtBtn, &QPushButton::clicked,
+            this, &MainWindow::loadMapTxt);
 
 
 #ifndef DISABLE_OPENCV
@@ -206,6 +221,54 @@ void MainWindow::paintEvent(QPaintEvent *event)
                 if(rect.contains(xp,yp))//ak je bod vo vnutri nasho obdlznika tak iba vtedy budem chciet kreslit
                     painter.drawEllipse(QPoint(xp, yp),2,2);
             }
+            // vykreslenie naplánovanej cesty z úlohy 4
+            if(!displayedPlannedPathCm.empty())
+            {
+                QPen pathPen;
+                pathPen.setWidth(3);
+                pathPen.setColor(Qt::yellow);
+                painter.setPen(pathPen);
+                painter.setBrush(Qt::yellow);
+
+                const double c = std::cos(curFiRad);
+                const double s = std::sin(curFiRad);
+                const double pxPerCm = 1.0;
+
+                const double centerX = rect.width()  / 2.0 + rect.topLeft().x();
+                const double centerY = rect.height() / 2.0 + rect.topLeft().y();
+
+                QPoint prevPoint;
+                bool havePrev = false;
+
+                for(const auto &wp : displayedPlannedPathCm)
+                {
+                    const double dx = wp.first  - curXcm;
+                    const double dy = wp.second - curYcm;
+
+                    const double fwd_cm   = dx * c + dy * s;
+                    const double right_cm = dx * s - dy * c;
+
+                    const int sx = static_cast<int>(centerX + right_cm * pxPerCm);
+                    const int sy = static_cast<int>(centerY - fwd_cm * pxPerCm);
+
+                    QPoint p(sx, sy);
+
+                    if(rect.contains(p))
+                    {
+                        painter.drawEllipse(p, 6, 6);
+
+                        if(havePrev)
+                            painter.drawLine(prevPoint, p);
+
+                        prevPoint = p;
+                        havePrev = true;
+                    }
+                    else
+                    {
+                        havePrev = false;
+                    }
+                }
+            }
         }
     }
 #ifndef DISABLE_SKELETON
@@ -270,8 +333,22 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         //uloha4
         // najprv sa pokúsime naplánovať cestu cez okupačnú mriežku
         // ak plánovanie zlyhá, použije sa pôvodné priame polohovanie
-        if(!_robot.planPathToGoal(goalX, goalY))
-            _robot.startPoseControl(goalX, goalY);
+        if(_robot.planPathToGoal(goalX, goalY))
+        {
+            setWindowTitle("Planovanie OK - idem cez occupancyGrid");
+
+            // uložíme naplánované waypointy na vykreslenie
+            displayedPlannedPathCm = _robot.getPlannedPathCm();
+        }
+        else
+        {
+            _robot.stopPoseControl();
+            displayedPlannedPathCm.clear();
+
+            setWindowTitle("Planovanie zlyhalo - robot nejde priamo");
+        }
+
+        update();
 
         return true;
     }
@@ -317,6 +394,84 @@ void MainWindow::saveMapToImage()
         return;
 
     scaled.save(fileName);
+}
+
+void MainWindow::saveMapTxt()
+{
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Uložiť occupancy mapu",
+        "occupancy_map.txt",
+        "Text files (*.txt)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    if(!_robot.saveOccupancyMapTxt(fileName))
+    {
+        QMessageBox::warning(this, "Chyba", "Mapu sa nepodarilo uložiť.");
+        return;
+    }
+
+    QMessageBox::information(this, "OK", "Mapa bola uložená.");
+}
+void MainWindow::loadMapTxt()
+{
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Načítať occupancy mapu",
+        "",
+        "Text files (*.txt)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    if(!_robot.loadOccupancyMapTxt(fileName))
+    {
+        QMessageBox::warning(this, "Chyba", "Mapu sa nepodarilo načítať.");
+        return;
+    }
+
+    // dôležité: po načítaní už nedovoľ lidaru prepisovať mapu
+    _robot.setMappingEnabled(false);
+
+    if(g_mapWindow)
+        g_mapWindow->updateMap(_robot.getOccupancyGrid());
+
+    update();
+
+    QMessageBox::information(this, "OK", "Mapa bola načítaná.");
+}
+
+
+
+//uloha4
+void MainWindow::loadMapFromFile()
+{
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Načítať occupancyGrid mapu",
+        "occupancy_map.txt",
+        "Text Files (*.txt)");
+
+    if(fileName.isEmpty())
+        return;
+
+    if(_robot.loadOccupancyGridFromFile(fileName.toStdString()))
+    {
+        std::cout << "OccupancyGrid mapa bola nacitana." << std::endl;
+
+        // odteraz sa occupancyGrid nebude meniť podľa lidaru
+        _robot.setUseLoadedMapOnly(true);
+
+        update();
+    }
+    else
+    {
+        std::cout << "OccupancyGrid mapu sa nepodarilo nacitat." << std::endl;
+    }
 }
 
 void MainWindow::on_pushButton_9_clicked() //start button

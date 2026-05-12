@@ -15,6 +15,10 @@
 
 //uloha4
 #include <queue>
+#include <fstream>
+#include <string>
+#include <iostream>
+#include <utility>
 
 
 #ifndef DISABLE_OPENCV
@@ -53,8 +57,23 @@ public:
   //uloha3
   std::vector<std::vector<int8_t>> getOccupancyGrid();
 
+  void setMappingEnabled(bool enabled);
+  bool isMappingEnabled();
+
+  bool saveOccupancyMapTxt(const QString &fileName);
+  bool loadOccupancyMapTxt(const QString &fileName);
+
+  // načítanie occupancyGrid zo súboru
+  bool loadOccupancyGridFromFile(const std::string &filename);
+
+  // zapnutie/vypnutie používania iba načítanej mapy
+  void setUseLoadedMapOnly(bool value);
+
   //uloha4
   bool planPathToGoal(double goalX_cm, double goalY_cm);
+
+  // vráti aktuálne naplánované waypointy v centimetroch
+  std::vector<std::pair<double, double>> getPlannedPathCm();
 
 signals:
   void publishPosition(double x, double y, double z);
@@ -155,6 +174,10 @@ private:
   std::vector<std::vector<int8_t>> occupancyGrid;
   std::vector<std::vector<uint16_t>> hitGrid;
   std::vector<std::vector<uint16_t>> freeGrid;
+
+  //uloha4
+  bool useLoadedMapOnly = false;
+  bool mappingEnabled = true;
 
   //uloha4
   // bod v mape - index bunky

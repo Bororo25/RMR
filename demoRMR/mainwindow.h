@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <vector>
+#include <QMessageBox>
 
 // #include "ckobuki.h"
 // #include "rplidar.h"
@@ -64,6 +65,12 @@ private slots:
   //uloha3
   void saveMapToImage();
 
+  void saveMapTxt();
+  void loadMapTxt();
+
+  //uloha4
+  void loadMapFromFile();
+
   int paintThisLidar(const std::vector<LaserData> &laserData);
 #ifndef DISABLE_OPENCV
   int paintThisCamera(const cv::Mat &cameraData);
@@ -90,6 +97,8 @@ private:
   bool goalMarkerValid = false;
   double goalXcm = 0.0;
   double goalYcm = 0.0;
+
+  std::vector<std::pair<double, double>> displayedPlannedPathCm;
 
   QTimer *timer;
 #ifndef DISABLE_JOYSTICK
