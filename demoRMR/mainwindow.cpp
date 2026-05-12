@@ -155,11 +155,10 @@ MainWindow::MainWindow(QWidget *parent) :
 {
 
     //tu je napevno nastavena ip. treba zmenit na to co ste si zadali do text boxu alebo nejaku inu pevnu. co bude spravna
-<<<<<<< HEAD
-    ipaddress= "127.0.0.1";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
-=======
+
     ipaddress= "192.168.1.15";//192.168.1.14toto je na niektory realny robot.. na lokal budete davat "127.0.0.1"
->>>>>>> origin/funkny_nove_mcl_odo
+
+
 
     ui->setupUi(this);
 
