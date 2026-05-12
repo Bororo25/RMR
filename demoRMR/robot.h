@@ -270,6 +270,7 @@ private:
   // model merania
   double mclSigmaHitCm = 14.0;
   int mclLaserStep = 12;
+  //zmenit na 10m
   double mclMaxLaserCm = 250.0;
 
   //uloha5
