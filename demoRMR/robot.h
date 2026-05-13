@@ -12,6 +12,9 @@
 #include <vector>
 #include <deque>
 
+#include <fstream>
+#include <string>
+
 #ifndef DISABLE_OPENCV
 #include "opencv2/core/utility.hpp"
 #include "opencv2/highgui/highgui.hpp"
@@ -46,6 +49,8 @@ public:
     void stopPoseControl();
 
     std::vector<std::vector<int8_t>> getOccupancyGrid();
+
+    bool saveOccupancyMapTxt(const QString &fileName);
 
 signals:
     void publishPosition(double x, double y, double z);

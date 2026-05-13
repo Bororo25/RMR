@@ -14,6 +14,10 @@
 #include <QImage>
 #include <QColor>
 
+#include <QFileDialog>
+#include <QPushButton>
+#include <QMessageBox>
+
 /// Boris Supak
 /// Martin Brandobur
 
@@ -79,7 +83,7 @@ MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow)
 {
-    ipaddress = "192.168.1.14"; //127.0.0.1, 192.168.1.14 //s
+    ipaddress = "127.0.0.1"; //127.0.0.1, 192.168.1.14 //s
 
     ui->setupUi(this);
 
@@ -94,6 +98,13 @@ MainWindow::MainWindow(QWidget *parent) :
 
     connect(saveMapBtn, &QPushButton::clicked,
             this, &MainWindow::saveMapToImage);
+
+    QPushButton *saveMapTxtBtn = new QPushButton("Uložiť TXT mapu", this);
+    saveMapTxtBtn->setGeometry(20, 40, 140, 35);
+    saveMapTxtBtn->show();
+
+    connect(saveMapTxtBtn, &QPushButton::clicked,
+            this, &MainWindow::saveMapTxt);
 
 #ifndef DISABLE_OPENCV
     actIndex = -1;
@@ -319,6 +330,28 @@ void MainWindow::saveMapToImage()
         return;
 
     scaled.save(fileName);
+}
+
+
+void MainWindow::saveMapTxt()
+{
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        "Uložiť occupancy mapu",
+        "occupancy_map.txt",
+        "Text files (*.txt)"
+        );
+
+    if(fileName.isEmpty())
+        return;
+
+    if(!_robot.saveOccupancyMapTxt(fileName))
+    {
+        QMessageBox::warning(this, "Chyba", "Mapu sa nepodarilo uložiť.");
+        return;
+    }
+
+    QMessageBox::information(this, "OK", "Mapa bola uložená.");
 }
 
 void MainWindow::on_pushButton_9_clicked()

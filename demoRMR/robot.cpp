@@ -80,6 +80,42 @@ std::vector<std::vector<int8_t>> robot::getOccupancyGrid()
     return occupancyGrid;
 }
 
+bool robot::saveOccupancyMapTxt(const QString &fileName)
+{
+    std::lock_guard<std::mutex> lk(mapMtx);
+
+    if(occupancyGrid.empty() || occupancyGrid[0].empty())
+        return false;
+
+    std::ofstream file(fileName.toStdString());
+
+    if(!file.is_open())
+        return false;
+
+    file << mapWidthCells << " "
+         << mapHeightCells << " "
+         << mapResolutionCm << " "
+         << mapOriginCellX << " "
+         << mapOriginCellY << "\n";
+
+    for(int y = 0; y < mapHeightCells; ++y)
+    {
+        for(int x = 0; x < mapWidthCells; ++x)
+        {
+            file << static_cast<int>(occupancyGrid[y][x]);
+
+            if(x + 1 < mapWidthCells)
+                file << " ";
+        }
+
+        file << "\n";
+    }
+
+    std::cout << "Mapa ulozena do suboru: " << fileName.toStdString() << std::endl;
+
+    return true;
+}
+
 bool robot::worldToMap(double wx_cm, double wy_cm, int &mx, int &my) const
 {
     mx = static_cast<int>(std::round(wx_cm / mapResolutionCm)) + mapOriginCellX;

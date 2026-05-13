@@ -12,6 +12,9 @@
 #include <sys/types.h>
 #include <vector>
 
+#include <QMessageBox>
+#include <vector>
+
 // #include "ckobuki.h"
 // #include "rplidar.h"
 
@@ -62,6 +65,8 @@ private slots:
   void on_pushButton_clicked();
 
   void saveMapToImage();
+
+  void saveMapTxt();
 
   int paintThisLidar(const std::vector<LaserData> &laserData);
 #ifndef DISABLE_OPENCV
